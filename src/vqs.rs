@@ -21,15 +21,15 @@ impl VQS {
         Ok(())
     }
 
-    pub fn ivcor(&self) -> u8 {
+    pub fn ivcor(&self) -> usize {
         1
     }
 
-    pub fn nvrt(&self) -> u8 {
+    pub fn nvrt(&self) -> usize {
         self.transform.as_ref().nvrt()
     }
 
-    fn bottom_level_indices(&self) -> Vec<u8> {
+    fn bottom_level_indices(&self) -> Vec<usize> {
         self.transform.as_ref().bottom_level_indices()
     }
 }
@@ -57,7 +57,7 @@ impl fmt::Display for VQS {
 #[derive(Default)]
 pub struct VQSKMeansBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
-    nclusters: Option<u8>,
+    nclusters: Option<usize>,
     stretching: Option<StretchingFunction>,
 }
 
@@ -75,9 +75,13 @@ impl<'a> VQSKMeansBuilder<'a> {
         let transform = match stretching {
             StretchingFunction::Quadratic(opts) => {
                 let mut builder = QuadraticTransformKMeansBuilder::default();
-                if opts.etal.is_some() {
-                    builder.etal(opts.etal.unwrap());
-                }
+                opts.as_ref().map(|opts| {
+                    opts.etal.as_ref().map(|etal| {
+                        builder.etal(etal.clone());
+                    });
+                });
+                builder.hgrid(hgrid);
+                builder.nclusters(nclusters);
                 builder.build()?
             }
         };
@@ -90,7 +94,7 @@ impl<'a> VQSKMeansBuilder<'a> {
         self.hgrid = Some(hgrid);
         self
     }
-    pub fn nclusters(&mut self, nclusters: u8) -> &mut Self {
+    pub fn nclusters(&mut self, nclusters: usize) -> &mut Self {
         self.nclusters = Some(nclusters);
         self
     }

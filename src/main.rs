@@ -29,13 +29,13 @@ enum Modes {
 #[derive(Args, Debug)]
 struct AutoCliOpts {
     hgrid_path: PathBuf,
-    clusters: u8,
+    clusters: usize,
     output_filepath: PathBuf,
-    levels_per_cluster: Vec<u8>,
+    levels_per_cluster: Vec<usize>,
 }
 
 fn run_auto_lsc2(auto_cli_opts: &AutoCliOpts) -> Result<(), Box<dyn Error>> {
-    // let hgrid = Hgrid::try_from(&auto_cli_opts.hgrid_path)?;
+    let hgrid = Hgrid::try_from(&auto_cli_opts.hgrid_path)?;
     let vqs = VQSKMeansBuilder::default()
         .hgrid(&hgrid)
         .stretching(StretchingFunction::Quadratic(None))

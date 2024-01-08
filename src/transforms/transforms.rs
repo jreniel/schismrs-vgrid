@@ -2,7 +2,7 @@ use super::quadratic::QuadraticTransformOpts;
 
 #[derive(Clone)]
 pub enum StretchingFunction {
-    Quadratic(QuadraticTransformOpts),
+    Quadratic(Option<QuadraticTransformOpts>),
     // S,
     // Shchepetkin2005,
     // Geyer,

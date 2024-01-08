@@ -10,14 +10,14 @@ pub struct QuadraticTransform {
 }
 
 impl BuildVQS for QuadraticTransform {
-    fn nvrt(&self) -> u8 {
+    fn nvrt(&self) -> usize {
         // a_vqs(m)=max(-1.d0,a_vqs0-(m-1)*0.03)
         // tmp=a_vqs(m)*sigma*sigma+(1+a_vqs(m))*sigma !transformed sigma
         // z_mas(k,m)=tmp*(etal+hsm(m))+etal
         unimplemented!()
     }
 
-    fn values_at_level(&self, level: u8) -> Vec<f64> {
+    fn values_at_level(&self, level: usize) -> Vec<f64> {
         unimplemented!()
     }
 
@@ -25,7 +25,7 @@ impl BuildVQS for QuadraticTransform {
         unimplemented!()
     }
 
-    fn bottom_level_indices(&self) -> Vec<u8> {
+    fn bottom_level_indices(&self) -> Vec<usize> {
         unimplemented!()
     }
 }
@@ -38,7 +38,7 @@ pub struct QuadraticTransformOpts {
 pub struct QuadraticTransformKMeansBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
     etal: Option<f64>,
-    nclusters: Option<u8>,
+    nclusters: Option<usize>,
 }
 
 impl<'a> QuadraticTransformKMeansBuilder<'a> {
@@ -51,13 +51,14 @@ impl<'a> QuadraticTransformKMeansBuilder<'a> {
             QuadraticTransformKMeansBuilderError::UninitializedFieldError("nclusters".to_string())
         })?;
         let hsm = kmeans_hsm(hgrid, nclusters)?;
-        Ok(QuadraticTransform { etal, hsm, a_vqs })
+        unimplemented!();
+        // Ok(QuadraticTransform { etal, hsm, a_vqs })
     }
     pub fn hgrid(&mut self, hgrid: &'a Hgrid) -> &mut Self {
         self.hgrid = Some(hgrid);
         self
     }
-    pub fn nclusters(&mut self, nclusters: u8) -> &mut Self {
+    pub fn nclusters(&mut self, nclusters: usize) -> &mut Self {
         self.nclusters = Some(nclusters);
         self
     }

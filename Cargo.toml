@@ -14,9 +14,10 @@ derive_builder = "0.12.0"
 figment = { version = "0.10.13", features = ["env", "yaml", "toml", "json"] }
 linfa-clustering = { version = "0.7.0", features = ["ndarray-linalg"] }
 linfa = "0.7.0"
-ndarray = "0.15.6"
+ndarray = { version = "0.15.6", features = ["rayon"] }
 ndarray-stats = "0.5.1"
 rayon = "1.8.0"
+humantime = "2.1.0"
 
 [build-dependencies]
 vergen = { version = "8.0.0", features = ["build", "cargo", "git", "gitcl", "rustc", "si"] }
