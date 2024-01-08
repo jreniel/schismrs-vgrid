@@ -1,9 +1,21 @@
 use clap::{Args, Parser, Subcommand};
-use std::{path::PathBuf, error::Error};
+use pretty_env_logger;
+// use rayon::prelude::*;
+// use schismrs_lsc2::master_vqs::MasterVQSBuilder;
+use schismrs_lsc2::transforms::StretchingFunction;
+use schismrs_lsc2::vqs::VQSKMeansBuilder;
+use schismrs_mesh::hgrid::Hgrid;
+use std::{error::Error, path::PathBuf};
 
+const VERSION: &'static str = concat! {
+    env! {"CARGO_PKG_VERSION"},
+    "-",
+    env! {"VERGEN_GIT_DESCRIBE"}
+};
 
 #[derive(Parser, Debug)]
-#[command(author, version, about, long_about = None)]
+#[command(author, about, long_about = None)]
+#[command(version = VERSION)]
 struct Cli {
     #[clap(subcommand)]
     mode: Modes,
@@ -11,31 +23,64 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Modes {
-    Auto(Auto),
+    Auto(AutoCliOpts),
 }
 
 #[derive(Args, Debug)]
-struct Auto {
-    hgrid: PathBuf,
+struct AutoCliOpts {
+    hgrid_path: PathBuf,
+    clusters: u8,
+    output_filepath: PathBuf,
+    levels_per_cluster: Vec<u8>,
 }
 
-fn run_auto_lsc2(auto: &Auto) -> Result<(), Box<dyn Error>> {
-    unimplemented!("We're here!")
+fn run_auto_lsc2(auto_cli_opts: &AutoCliOpts) -> Result<(), Box<dyn Error>> {
+    // let hgrid = Hgrid::try_from(&auto_cli_opts.hgrid_path)?;
+    let vqs = VQSKMeansBuilder::default()
+        .hgrid(&hgrid)
+        .stretching(StretchingFunction::Quadratic(None))
+        .nclusters(auto_cli_opts.clusters)
+        .build()?;
+    // println!("{}", vqs);
+    // vqs.write_to_file(&auto_cli_opts.output_filepath)?;
+    Ok(())
 }
 
-fn main() -> Result<(), Box<dyn Error>>{
+//fn _run_harcoded_example(auto_cli_opts: &AutoCliOpts) -> Result<(), Box<dyn Error>> {
+//    // use schismrs_lsc2::transforms::StretchingFunction;
+//    let hsm = vec![
+//        50, 60, 80, 110, 150, 200, 260, 330, 410, 500, 600, 710, 830, 960, 1100, 1250, 1410, 1580,
+//        1760,
+//    ];
+//    let m_vqs = hsm.len();
+//    let nv_vqs: Vec<_> = (1..=m_vqs).map(|i| 14 + i).collect();
+//    let hgrid = Hgrid::try_from(&auto_cli_opts.hgrid_path)?;
+//    // (0..m_vqs).into_par_iter().for_each(|m| {
+//    //     let nv = nv_vqs[m];
+//    //     (0..nv).for_each(|k| {
+//    //         // loop body here
+//    //     });
+//    // });
+
+//    //
+//    //
+//    //
+//    // let nvrt_m = nv_vqs[m_vqs];
+//    // dbg! {nv_vqs};
+//    // unimplemented!();
+//    Ok(())
+//}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    pretty_env_logger::init();
     let cli = Cli::parse();
     match &cli.mode {
         Modes::Auto(auto) => {
-            run_auto_lsc2(auto)?;
+            run_auto_lsc2(&auto)?;
         }
     }
     Ok(())
     // let _dz_bot_min = 3.0;
-    // let hsm = [
-    //     50, 60, 80, 110, 150, 200, 260, 330, 410, 500, 600, 710, 830, 960, 1100, 1250, 1410, 1580,
-    //     1760,
-    // ];
     // let mut nv_vqs = [0; 19];
     // let _a_vqs = [-1.0; 19];
     // for i in 1..=m_vqs {
