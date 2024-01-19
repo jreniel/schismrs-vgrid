@@ -1,12 +1,13 @@
 use super::quadratic::QuadraticTransformOpts;
 
-#[derive(Clone)]
-pub enum StretchingFunction {
-    Quadratic(Option<QuadraticTransformOpts>),
-    // S,
-    // Shchepetkin2005,
-    // Geyer,
-    // Shchepetkin2010,
+#[derive(Clone, Debug)]
+pub enum StretchingFunction<'a> {
+    Quadratic(Option<QuadraticTransformOpts<'a>>),
+    // S(Option<STransformOpts>),
+    // Shchepetkin2005(Option<Shchepetkin2005TransformOpts>),
+    // Geyer(Option<GeyerTransformOpts>),
+    // Shchepetkin2010(Option<Shchepetkin2010TransformOpts>),
+    // FixedZ(FixedZOpts)
 }
 
 // impl StretchingFunction {
