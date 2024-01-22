@@ -1,12 +1,14 @@
 use crate::transforms::quadratic::QuadraticTransformBuilder;
 use crate::transforms::quadratic::QuadraticTransformBuilderError;
+use crate::transforms::s::STransformBuilder;
+use crate::transforms::s::STransformBuilderError;
 use crate::transforms::traits::Transform;
 use crate::transforms::StretchingFunction;
 use crate::{kmeans_hsm, KMeansHSMCreateError};
 use ndarray::Array1;
 use ndarray::Array2;
 use ndarray::Axis;
-use schismrs_mesh::hgrid::Hgrid;
+use schismrs_hgrid::hgrid::Hgrid;
 use std::cmp::max;
 use std::f64::NAN;
 use std::fmt;
@@ -141,7 +143,7 @@ impl<'a> VQSBuilder<'a> {
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("stretching".to_string()))?;
 
-        let transform = match stretching {
+        let transform: Box<dyn Transform> = match stretching {
             StretchingFunction::Quadratic(opts) => {
                 let mut builder = QuadraticTransformBuilder::default();
                 builder.hgrid(hgrid);
@@ -154,7 +156,21 @@ impl<'a> VQSBuilder<'a> {
 
                     opts.a_vqs0.as_ref().map(|a_vqs0| builder.a_vqs0(a_vqs0));
                 });
-                builder.build()?
+                Box::new(builder.build()?)
+            }
+            StretchingFunction::S(opts) => {
+                let mut builder = STransformBuilder::default();
+                builder.hgrid(hgrid);
+                builder.depths(depths);
+                builder.nlevels(nlevels);
+                opts.as_ref().map(|opts| {
+                    opts.etal.as_ref().map(|etal| {
+                        builder.etal(etal);
+                    });
+
+                    opts.a_vqs0.as_ref().map(|a_vqs0| builder.a_vqs0(a_vqs0));
+                });
+                Box::new(builder.build()?)
             }
         };
         let z_mas = transform.zmas();
@@ -254,6 +270,8 @@ pub enum VQSBuilderError {
     UninitializedFieldError(String),
     #[error(transparent)]
     QuadraticTransformBuilderError(#[from] QuadraticTransformBuilderError),
+    #[error(transparent)]
+    STransformBuilderError(#[from] STransformBuilderError),
 }
 
 pub struct VQSKMeansBuilder<'a> {

@@ -1,9 +1,10 @@
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use pretty_env_logger;
-use schismrs_lsc2::transforms::quadratic::QuadraticTransformOpts;
-use schismrs_lsc2::transforms::StretchingFunction;
-use schismrs_lsc2::vqs::{VQSBuilder, VQSKMeansBuilder};
-use schismrs_mesh::hgrid::Hgrid;
+use schismrs_hgrid::hgrid::Hgrid;
+use schismrs_vgrid::transforms::quadratic::QuadraticTransformOpts;
+use schismrs_vgrid::transforms::s::STransformOpts;
+use schismrs_vgrid::transforms::StretchingFunction;
+use schismrs_vgrid::vqs::{VQSBuilder, VQSKMeansBuilder};
 use std::process::ExitCode;
 use std::{error::Error, path::PathBuf};
 
@@ -19,20 +20,24 @@ const VERSION: &'static str = concat! {
 struct Cli {
     hgrid_path: PathBuf,
     output_filepath: PathBuf,
-    #[clap(subcommand)]
-    mode: Modes,
     #[clap(short, long)]
     transform: StretchingFunctionKind,
     #[clap(short, long)]
     a_vqs0: Option<f64>,
     #[clap(short, long)]
     etal: Option<f64>,
+    #[clap(short, long)]
+    theta_f: Option<f64>,
+    #[clap(short, long)]
+    theta_b: Option<f64>,
+    #[clap(subcommand)]
+    mode: Modes,
 }
 
 #[derive(ValueEnum, Clone, Debug)]
 enum StretchingFunctionKind {
     Quadratic,
-    // S,
+    S,
     // Shchepetkin2005,
     // Geyer,
     // Shchepetkin2010,
@@ -81,6 +86,22 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
                 StretchingFunction::Quadratic(quadratic_opts)
             } else {
                 StretchingFunction::Quadratic(None)
+            }
+        }
+        StretchingFunctionKind::S => {
+            let mut s_opts = None;
+            if cli.a_vqs0.is_some() || cli.etal.is_some() {
+                s_opts = Some(STransformOpts {
+                    a_vqs0: cli.a_vqs0.as_ref(),
+                    etal: cli.etal.as_ref(),
+                    theta_b: cli.theta_b.as_ref(),
+                    theta_f: cli.theta_f.as_ref(),
+                });
+            }
+            if s_opts.is_some() {
+                StretchingFunction::S(s_opts)
+            } else {
+                StretchingFunction::S(None)
             }
         }
     };

@@ -1,6 +1,6 @@
 use super::traits::Transform;
 use ndarray::Array2;
-use schismrs_mesh::Hgrid;
+use schismrs_hgrid::Hgrid;
 use std::f64::NAN;
 use thiserror::Error;
 

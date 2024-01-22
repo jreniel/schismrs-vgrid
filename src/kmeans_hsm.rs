@@ -4,7 +4,7 @@ use linfa::DatasetBase;
 use linfa_clustering::{KMeans, KMeansError};
 use log;
 use ndarray::{Array1, ShapeError};
-use schismrs_mesh::Hgrid;
+use schismrs_hgrid::Hgrid;
 use std::cmp::Ordering;
 use std::time::Instant;
 use thiserror::Error;

@@ -1,9 +1,10 @@
 use super::quadratic::QuadraticTransformOpts;
+use super::s::STransformOpts;
 
 #[derive(Clone, Debug)]
 pub enum StretchingFunction<'a> {
     Quadratic(Option<QuadraticTransformOpts<'a>>),
-    // S(Option<STransformOpts>),
+    S(Option<STransformOpts<'a>>),
     // Shchepetkin2005(Option<Shchepetkin2005TransformOpts>),
     // Geyer(Option<GeyerTransformOpts>),
     // Shchepetkin2010(Option<Shchepetkin2010TransformOpts>),
