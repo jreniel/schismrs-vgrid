@@ -13,7 +13,7 @@ pub struct SZ {
     z_array: Array1<f64>,
     theta_f: f64,
     theta_b: f64,
-    hc: f64,
+    hc: f64, // also known as critical layer depth
 }
 
 impl SZ {
@@ -22,11 +22,9 @@ impl SZ {
         write!(file, "{}", self)?;
         Ok(())
     }
-
     pub fn ivcor(&self) -> usize {
         2
     }
-
     pub fn nvrt(&self) -> usize {
         self.sigma.len() + self.z_array.len() - 1
     }
@@ -52,6 +50,7 @@ impl fmt::Display for SZ {
     }
 }
 
+#[derive(Default)]
 pub struct SZBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
     slevels: Option<&'a usize>,
@@ -59,19 +58,6 @@ pub struct SZBuilder<'a> {
     theta_b: Option<&'a f64>,
     theta_f: Option<&'a f64>,
     critical_depth: Option<&'a f64>,
-}
-
-impl<'a> Default for SZBuilder<'a> {
-    fn default() -> Self {
-        Self {
-            hgrid: None,
-            slevels: None,
-            zlevels: None,
-            theta_b: Some(&0.001),
-            theta_f: Some(&1.),
-            critical_depth: Some(&30.),
-        }
-    }
 }
 
 impl<'a> SZBuilder<'a> {
@@ -122,7 +108,6 @@ impl<'a> SZBuilder<'a> {
         };
         Ok(())
     }
-
     fn validate_critical_depth(critical_depth: &f64) -> Result<(), SZBuilderError> {
         if *critical_depth < 5. {
             return Err(SZBuilderError::InvalidCriticalDepth(*critical_depth));

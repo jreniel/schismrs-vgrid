@@ -42,8 +42,10 @@ impl<'a> Default for STransformBuilder<'a> {
             depths: None,
             nlevels: None,
             a_vqs0: Some(&-1.),
-            theta_b: Some(&0.001),
-            theta_f: Some(&1.),
+            // theta_b: Some(&0.001),
+            theta_b: None,
+            // theta_f: Some(&1.),
+            theta_f: None,
         }
     }
 }
