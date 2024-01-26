@@ -127,6 +127,9 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
         }
     };
     vqs.write_to_file(&cli.output_filepath)?;
+    // let mut html_out = PathBuf::new();
+    // html_out.push("depth_distribution.html");
+    // vqs.make_html_plot(&html_out, 5)?;
     Ok(())
 }
 

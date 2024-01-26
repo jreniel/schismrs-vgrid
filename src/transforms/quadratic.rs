@@ -104,6 +104,44 @@ impl<'a> QuadraticTransformBuilder<'a> {
                 println!("{}", row_string);
             }
         }
+
+        // use std::fs::File;
+        // use std::io::{Error, Write};
+        // let mut file = File::create("rust.12").expect("Unable to create file");
+        // for row in 0..z_mas.shape()[0] {
+        //     let mut row_string = String::from(format!("{:4} ", row + 1));
+        //     for col in 0..z_mas.shape()[1] {
+        //         row_string += &format!("{:12.4} ", z_mas[[row, col]]);
+        //     }
+        //     write!(file, " {}\n", row_string).unwrap();
+        // }
+        // file.flush().unwrap();
+        //
+        //
+        //
+        //
+        //
+        // use std::fs::File;
+        // use std::io::{Error, Write};
+        // let mut file = File::create("vgrid_master.out").expect("Unable to create file");
+        // for (m, &depth) in depths.iter().enumerate() {
+        //     write!(file, " {:5} {:5} {:12.4} ", m + 1, nlevels[m], depth)
+        //         .expect("Unable to write to file");
+        //     for k in 0..nlevels[m] {
+        //         write!(file, "{:12.4} ", z_mas[[k, m]]).expect("Unable to write to file");
+        //     }
+        //     writeln!(file).expect("Unable to write newline to file");
+        // }
+
+        // // Ensure data is flushed to the file
+        // file.flush().expect("Unable to flush file");
+
+        // let mut file = File::create("a_vqs0.out").expect("Unable to create file");
+        // for (m, &value) in a_vqs.iter().enumerate() {
+        //     write!(file, "{} {}\n", m + 1, value).unwrap();
+        // }
+
+        // file.flush().unwrap(); // Ensure data is flushed to the file
         z_mas
     }
 
@@ -116,7 +154,7 @@ impl<'a> QuadraticTransformBuilder<'a> {
         for m in 0..num_grids {
             let mut a = *a_vqs0;
             if m != 0 {
-                a = a - (m as f64 - 1.0) * *skew_decay_rate;
+                a = a - m as f64 * *skew_decay_rate;
             }
             a = a.max(-1.0);
             a_vqs.push(a);

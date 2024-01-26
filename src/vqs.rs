@@ -20,6 +20,9 @@ use thiserror::Error;
 
 pub struct VQS {
     sigma_vqs: Array2<f64>,
+    depths: Array1<f64>,
+    etal: f64,
+    znd: Array2<f64>,
 }
 
 impl VQS {
@@ -63,6 +66,64 @@ impl VQS {
 
     fn values_at_level(&self, level: usize) -> Vec<f64> {
         self.sigma_vqs.row(level - 1).to_vec()
+    }
+
+    pub fn make_html_plot(&self, path: &PathBuf, nbins: usize) -> Result<(), VQSKPlotterError> {
+        if nbins < 2 {
+            return Err(VQSKPlotterError::InvalidNbinsValue(nbins));
+        }
+
+        let min_depth = *self
+            .depths
+            .iter()
+            .filter(|depth| **depth < self.etal)
+            .min_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        let min_index = self
+            .depths
+            .iter()
+            .position(|depth| *depth == min_depth)
+            .unwrap();
+
+        let max_depth = *self
+            .depths
+            .iter()
+            .filter(|depth| **depth < self.etal)
+            .max_by(|a, b| a.partial_cmp(b).unwrap())
+            .unwrap();
+
+        let max_index = self
+            .depths
+            .iter()
+            .position(|depth| *depth == max_depth)
+            .unwrap();
+        let mut samples = Array1::linspace(min_depth, max_depth, nbins);
+        let mut indices = vec![min_index];
+        for i in 1..samples.len() - 1 {
+            let s = samples[i];
+            let (index, closest) = self
+                .depths
+                .iter()
+                .enumerate()
+                .min_by(|&(_, a), &(_, b)| f64::abs(s - a).partial_cmp(&f64::abs(s - b)).unwrap())
+                .unwrap();
+            samples[i] = *closest;
+            indices.push(index);
+        }
+        indices.push(max_index);
+
+        for (i, sigma_index) in indices.iter().enumerate() {
+            let this_depth = self.depths[[*sigma_index]];
+            dbg!(self.sigma_vqs.shape());
+            let this_sigma = self.sigma_vqs.index_axis(Axis(1), *sigma_index);
+            let this_znd = self.znd.index_axis(Axis(1), *sigma_index);
+            dbg!(this_znd);
+            dbg!(this_depth);
+            dbg!(this_sigma);
+        }
+
+        Ok(())
     }
 }
 
@@ -169,20 +230,27 @@ impl<'a> VQSBuilder<'a> {
                     });
 
                     opts.a_vqs0.as_ref().map(|a_vqs0| builder.a_vqs0(a_vqs0));
+                    opts.theta_b
+                        .as_ref()
+                        .map(|theta_b| builder.theta_b(theta_b));
+                    opts.theta_f
+                        .as_ref()
+                        .map(|theta_f| builder.theta_f(theta_f));
                 });
                 Box::new(builder.build()?)
             }
         };
         let z_mas = transform.zmas();
-        let sigma_vqs = Self::build_sigma_vqs(
-            z_mas,
-            hgrid,
+        let etal = transform.etal();
+        let (sigma_vqs, znd) =
+            Self::build_sigma_vqs(z_mas, hgrid, depths, nlevels, etal, transform.a_vqs0())?;
+        let depths = hgrid.depths();
+        Ok(VQS {
+            sigma_vqs,
             depths,
-            nlevels,
-            transform.etal(),
-            transform.a_vqs0(),
-        )?;
-        Ok(VQS { sigma_vqs })
+            etal: *etal,
+            znd,
+        })
     }
 
     fn build_sigma_vqs(
@@ -192,14 +260,14 @@ impl<'a> VQSBuilder<'a> {
         nv_vqs: &Vec<usize>,
         etal: &f64,
         a_vqs0: &f64,
-    ) -> Result<Array2<f64>, VQSBuilderError> {
+    ) -> Result<(Array2<f64>, Array2<f64>), VQSBuilderError> {
         let nvrt = z_mas.nrows();
         let dp = -hgrid.depths();
         let np = dp.len();
         let mut sigma_vqs = Array2::from_elem((nvrt, np), NAN);
         let mut kbp = Array1::zeros(np);
         let eta2 = Array1::from_elem(np, etal);
-        // let mut znd = Array2::from_elem((nvrt, np), NAN);
+        let mut znd = Array2::from_elem((nvrt, np), NAN);
         let uninitialized_m0_value = hsm.len() + 1;
         let mut m0 = Array1::from_elem(np, uninitialized_m0_value);
         for i in 0..np {
@@ -217,7 +285,7 @@ impl<'a> VQSBuilder<'a> {
                 for k in 0..nv_vqs[0] {
                     let sigma = k as f64 / (1. - nv_vqs[0] as f64);
                     sigma_vqs[[k, i]] = a_vqs0 * sigma * sigma + (1. + a_vqs0) * sigma;
-                    // znd[[k, i]] = sigma_vqs[[k, i]] * (eta2[i] + dp[i]) + eta2[i];
+                    znd[[k, i]] = sigma_vqs[[k, i]] * (eta2[i] + dp[i]) + eta2[i];
                 }
             // compute sigma_vqs based on depth & stretching
             } else {
@@ -242,7 +310,7 @@ impl<'a> VQSBuilder<'a> {
             }
         }
         sigma_vqs.invert_axis(Axis(0));
-        Ok(sigma_vqs)
+        Ok((sigma_vqs, znd))
     }
 
     pub fn hgrid(&mut self, hgrid: &'a Hgrid) -> &mut Self {
@@ -355,4 +423,12 @@ pub enum VQSKMeansBuilderError {
     VQSBuilderError(#[from] VQSBuilderError),
     #[error(transparent)]
     KMeansHSMCreateError(#[from] KMeansHSMCreateError),
+}
+
+#[derive(Error, Debug)]
+pub enum VQSKPlotterError {
+    #[error("The mesh doesn't contain any negative values, there's nothing to plot.")]
+    NoNegativeDepthValuesInMesh,
+    #[error("Expected nbins to be >= 2 but got {0}")]
+    InvalidNbinsValue(usize),
 }

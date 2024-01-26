@@ -103,6 +103,31 @@ impl<'a> STransformBuilder<'a> {
                 z_mas[[k, m]] = *etal * (1. + sigma) + depths[0] * sigma + (depth - depths[0]) * cs;
             }
         }
+        // use std::fs::File;
+        // use std::io::{Error, Write};
+        // let mut file = File::create("vgrid_master.out").expect("Unable to create file");
+        // for (m, &depth) in depths.iter().enumerate() {
+        //     write!(file, " {:5} {:5} {:12.4} ", m + 1, nlevels[m], depth)
+        //         .expect("Unable to write to file");
+        //     for k in 0..nlevels[m] {
+        //         write!(file, "{:12.4} ", z_mas[[k, m]]).expect("Unable to write to file");
+        //     }
+        //     writeln!(file).expect("Unable to write newline to file");
+        // }
+
+        // // Ensure data is flushed to the file
+        // file.flush().expect("Unable to flush file");
+
+        // let mut file = File::create("rust.12").expect("Unable to create file");
+        // for row in 0..z_mas.shape()[0] {
+        //     let mut row_string = String::from(format!("{:4} ", row + 1));
+        //     for col in 0..z_mas.shape()[1] {
+        //         row_string += &format!("{:12.4} ", z_mas[[row, col]]);
+        //     }
+        //     write!(file, " {}\n", row_string).unwrap();
+        // }
+        // file.flush().unwrap();
+        // unimplemented!("Debugging z_mas");
         // // verify:
         // if log::log_enabled!(log::Level::Debug) {
         //     log::debug!("z_mas levels:");
