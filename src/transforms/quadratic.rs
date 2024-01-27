@@ -22,6 +22,7 @@ impl Transform for QuadraticTransform {
     }
 }
 
+#[derive(Default)]
 pub struct QuadraticTransformBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
     etal: Option<&'a f64>,
@@ -29,19 +30,6 @@ pub struct QuadraticTransformBuilder<'a> {
     nlevels: Option<&'a Vec<usize>>,
     a_vqs0: Option<&'a f64>,
     skew_decay_rate: Option<&'a f64>,
-}
-
-impl<'a> Default for QuadraticTransformBuilder<'a> {
-    fn default() -> Self {
-        Self {
-            etal: Some(&0.),
-            hgrid: None,
-            depths: None,
-            nlevels: None,
-            a_vqs0: Some(&-1.),
-            skew_decay_rate: Some(&0.03),
-        }
-    }
 }
 
 impl<'a> QuadraticTransformBuilder<'a> {
@@ -273,4 +261,5 @@ pub enum QuadraticTransformBuilderError {
 pub struct QuadraticTransformOpts<'a> {
     pub etal: Option<&'a f64>,
     pub a_vqs0: Option<&'a f64>,
+    pub skew_decay_rate: Option<&'a f64>,
 }

@@ -22,10 +22,17 @@ struct Cli {
     output_filepath: PathBuf,
     #[clap(short, long)]
     transform: StretchingFunctionKind,
-    #[clap(short, long)]
+    #[clap(
+        short,
+        long,
+        default_value = "0.",
+        help = "|a_vqs0|<=1. -- -1 skew towards bottom, 1. skew towards surface"
+    )]
     a_vqs0: Option<f64>,
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "0.")]
     etal: Option<f64>,
+    #[clap(short, long, default_value = "0.3")]
+    skew_decay_rate: Option<f64>,
     #[clap(short, long)]
     theta_f: Option<f64>,
     #[clap(short, long)]
@@ -77,34 +84,21 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
     let hgrid = Hgrid::try_from(&cli.hgrid_path)?;
     let transform = match cli.transform {
         StretchingFunctionKind::Quadratic => {
-            let mut quadratic_opts = None;
-            if cli.a_vqs0.is_some() || cli.etal.is_some() {
-                quadratic_opts = Some(QuadraticTransformOpts {
-                    a_vqs0: cli.a_vqs0.as_ref(),
-                    etal: cli.etal.as_ref(),
-                });
-            }
-            if quadratic_opts.is_some() {
-                StretchingFunction::Quadratic(quadratic_opts)
-            } else {
-                StretchingFunction::Quadratic(None)
-            }
+            let quadratic_opts = Some(QuadraticTransformOpts {
+                a_vqs0: cli.a_vqs0.as_ref(),
+                etal: cli.etal.as_ref(),
+                skew_decay_rate: cli.skew_decay_rate.as_ref(),
+            });
+            StretchingFunction::Quadratic(quadratic_opts)
         }
         StretchingFunctionKind::S => {
-            let mut s_opts = None;
-            if cli.a_vqs0.is_some() || cli.etal.is_some() {
-                s_opts = Some(STransformOpts {
-                    a_vqs0: cli.a_vqs0.as_ref(),
-                    etal: cli.etal.as_ref(),
-                    theta_b: cli.theta_b.as_ref(),
-                    theta_f: cli.theta_f.as_ref(),
-                });
-            }
-            if s_opts.is_some() {
-                StretchingFunction::S(s_opts)
-            } else {
-                StretchingFunction::S(None)
-            }
+            let s_opts = Some(STransformOpts {
+                a_vqs0: cli.a_vqs0.as_ref(),
+                etal: cli.etal.as_ref(),
+                theta_b: cli.theta_b.as_ref(),
+                theta_f: cli.theta_f.as_ref(),
+            });
+            StretchingFunction::S(s_opts)
         }
     };
     let vqs = match &cli.mode {

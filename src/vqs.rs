@@ -227,8 +227,10 @@ impl<'a> VQSBuilder<'a> {
                     opts.etal.as_ref().map(|etal| {
                         builder.etal(etal);
                     });
-
                     opts.a_vqs0.as_ref().map(|a_vqs0| builder.a_vqs0(a_vqs0));
+                    opts.skew_decay_rate
+                        .as_ref()
+                        .map(|skew_decay_rate| builder.skew_decay_rate(skew_decay_rate));
                 });
                 Box::new(builder.build()?)
             }
