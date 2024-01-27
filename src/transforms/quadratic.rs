@@ -168,7 +168,7 @@ impl<'a> QuadraticTransformBuilder<'a> {
         nlevels: &Vec<usize>,
         a_vqs0: &f64,
     ) -> Result<(), QuadraticTransformBuilderError> {
-        if *a_vqs0 < -1.0 || *a_vqs0 > 0.0 {
+        if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
             return Err(QuadraticTransformBuilderError::InvalidAVqs0(*a_vqs0));
         }
 

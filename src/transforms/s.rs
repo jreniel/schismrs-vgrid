@@ -152,7 +152,7 @@ impl<'a> STransformBuilder<'a> {
     ) -> Result<(), STransformBuilderError> {
         Self::validate_theta_b(theta_b)?;
         Self::validate_theta_f(theta_f)?;
-        if *a_vqs0 < -1.0 || *a_vqs0 > 0.0 {
+        if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
             return Err(STransformBuilderError::InvalidAVqs0(*a_vqs0));
         }
 
