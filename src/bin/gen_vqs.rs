@@ -30,6 +30,8 @@ struct Cli {
     theta_f: Option<f64>,
     #[clap(short, long)]
     theta_b: Option<f64>,
+    #[clap(long)]
+    dz_bottom_min: f64,
     #[clap(subcommand)]
     mode: Modes,
 }
@@ -111,12 +113,14 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             .depths(&opts.depths)
             .nlevels(&opts.nlevels)
             .stretching(&transform)
+            .dz_bottom_min(&cli.dz_bottom_min)
             .build()?,
         Modes::Auto(opts) => {
             let mut builder = VQSKMeansBuilder::default();
             builder.hgrid(&hgrid);
             builder.stretching(&transform);
             builder.nclusters(&opts.clusters);
+            builder.dz_bottom_min(&cli.dz_bottom_min);
             if let Some(shallow_levels) = &opts.shallow_levels {
                 builder.shallow_levels(shallow_levels);
             }

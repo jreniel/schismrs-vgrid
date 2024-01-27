@@ -9,7 +9,7 @@ use ndarray::Array1;
 use ndarray::Array2;
 use ndarray::Axis;
 use schismrs_hgrid::hgrid::Hgrid;
-use std::cmp::max;
+use std::cmp::min;
 use std::f64::NAN;
 use std::fmt;
 use std::fs::File;
@@ -113,15 +113,22 @@ impl VQS {
         }
         indices.push(max_index);
 
-        for (i, sigma_index) in indices.iter().enumerate() {
-            let this_depth = self.depths[[*sigma_index]];
-            dbg!(self.sigma_vqs.shape());
-            let this_sigma = self.sigma_vqs.index_axis(Axis(1), *sigma_index);
-            let this_znd = self.znd.index_axis(Axis(1), *sigma_index);
-            dbg!(this_znd);
+        for this_index in indices.iter() {
+            // let this_znd = self
+            //     .znd
+            //     .index_axis(Axis(1), *this_index)
+            //     .iter()
+            //     .filter(|&&x| !x.is_nan())
+            //     .cloned()
+            //     .collect::<Array1<f64>>();
+            dbg!(this_index);
+            // dbg!(self.znd.shape());
+            let this_depth = self.depths[[*this_index]];
             dbg!(this_depth);
-            dbg!(this_sigma);
+            let this_znd = self.znd.index_axis(Axis(1), *this_index);
+            dbg!(this_znd);
         }
+        unimplemented!("stop");
 
         Ok(())
     }
@@ -184,6 +191,7 @@ pub struct VQSBuilder<'a> {
     depths: Option<&'a Vec<f64>>,
     nlevels: Option<&'a Vec<usize>>,
     stretching: Option<&'a StretchingFunction<'a>>,
+    dz_bottom_min: Option<&'a f64>,
 }
 
 impl<'a> VQSBuilder<'a> {
@@ -204,6 +212,11 @@ impl<'a> VQSBuilder<'a> {
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("stretching".to_string()))?;
 
+        let dz_bottom_min = self
+            .dz_bottom_min
+            .clone()
+            .ok_or_else(|| VQSBuilderError::UninitializedFieldError("dz_bottom_min".to_string()))?;
+        Self::validate_dz_bottom_min(dz_bottom_min)?;
         let transform: Box<dyn Transform> = match stretching {
             StretchingFunction::Quadratic(opts) => {
                 let mut builder = QuadraticTransformBuilder::default();
@@ -242,8 +255,15 @@ impl<'a> VQSBuilder<'a> {
         };
         let z_mas = transform.zmas();
         let etal = transform.etal();
-        let (sigma_vqs, znd) =
-            Self::build_sigma_vqs(z_mas, hgrid, depths, nlevels, etal, transform.a_vqs0())?;
+        let (sigma_vqs, znd) = Self::build_sigma_vqs(
+            z_mas,
+            hgrid,
+            depths,
+            nlevels,
+            etal,
+            transform.a_vqs0(),
+            dz_bottom_min,
+        )?;
         let depths = hgrid.depths();
         Ok(VQS {
             sigma_vqs,
@@ -260,6 +280,7 @@ impl<'a> VQSBuilder<'a> {
         nv_vqs: &Vec<usize>,
         etal: &f64,
         a_vqs0: &f64,
+        dz_bottom_min: &f64,
     ) -> Result<(Array2<f64>, Array2<f64>), VQSBuilderError> {
         let nvrt = z_mas.nrows();
         let dp = -hgrid.depths();
@@ -271,44 +292,76 @@ impl<'a> VQSBuilder<'a> {
         let uninitialized_m0_value = hsm.len() + 1;
         let mut m0 = Array1::from_elem(np, uninitialized_m0_value);
         for i in 0..np {
-            for m in 1..hsm.len() {
-                if dp[i] > hsm[m - 1] && dp[i] <= hsm[m] {
-                    m0[i] = m;
-                    break;
-                }
-            }
-        }
-        for i in 0..np {
-            let this_dp = dp[i];
-            if this_dp <= hsm[0] {
+            if dp[i] <= hsm[0] {
                 kbp[i] = nv_vqs[0];
                 for k in 0..nv_vqs[0] {
-                    let sigma = k as f64 / (1. - nv_vqs[0] as f64);
-                    sigma_vqs[[k, i]] = a_vqs0 * sigma * sigma + (1. + a_vqs0) * sigma;
+                    let sigma = (k as f64) / (1.0 - nv_vqs[0] as f64);
+                    sigma_vqs[[k, i]] = a_vqs0 * sigma * sigma + (1.0 + a_vqs0) * sigma;
                     znd[[k, i]] = sigma_vqs[[k, i]] * (eta2[i] + dp[i]) + eta2[i];
                 }
-            // compute sigma_vqs based on depth & stretching
             } else {
-                for k in 0..nvrt {
-                    let z1 = z_mas[[max(0, k as i64 - 1) as usize, m0[i]]];
-                    let z2 = z_mas[[k, m0[i]]];
-                    let zrat = (this_dp - hsm[m0[i] - 1]) / (hsm[m0[i]] - hsm[m0[i] - 1]);
-                    let z3 = z1 + (z2 - z1) * zrat;
-                    sigma_vqs[[k, i]] = (z3 + this_dp) / (eta2[i] + this_dp);
+                m0[i] = 0;
+                let mut zrat = 0.;
+                for m in 1..hsm.len() {
+                    if dp[i] > hsm[m - 1] && dp[i] <= hsm[m] {
+                        m0[i] = m;
+                        zrat = (dp[i] - hsm[m - 1]) / (hsm[m] - hsm[m - 1]);
+                        break;
+                    }
+                }
+                if m0[i] == 0 {
+                    return Err(VQSBuilderError::FailedToFindAMasterVgrid(i + 1, dp[i]));
                 }
 
-                // set surface & bottom
-                sigma_vqs[[0, i]] = 0.0;
-                sigma_vqs[[kbp[i], i]] = -1.0;
-                // for k in 1..kbp[i] {
-                //     if sigma_vqs[[k, i]] >= sigma_vqs[[k - 1, i]] {
-                //         // The reference Fortran code had this monotonicity check,
-                //         // but I'm not entirely sure that this condition is reachable.
-                //         unimplemented!("non monotonic")
-                //     }
-                // }
+                // interpolate vertical levels
+                kbp[i] = 0;
+                let mut z3 = NAN;
+                for k in 0..nv_vqs[m0[i]] {
+                    let z1 = z_mas[[min(k, nv_vqs[m0[i] - 1]), m0[i] - 1]];
+                    let z2 = z_mas[[k, m0[i]]];
+                    z3 = z1 + (z2 - z1) * zrat;
+
+                    if z3 >= -dp[i] + dz_bottom_min {
+                        znd[[k, i]] = z3;
+                    } else {
+                        kbp[i] = k;
+                        break;
+                    }
+                }
+                if kbp[i] == 0 {
+                    return Err(VQSBuilderError::FailedToFindABottom(
+                        i + 1,
+                        dp[i],
+                        z3,
+                        z_mas.index_axis(Axis(1), m0[i]).to_owned(),
+                    ));
+                }
+                znd[[kbp[i], i]] = -dp[i];
+                for k in 1..kbp[i] {
+                    if znd[[k - 1, i]] <= znd[[k, i]] {
+                        return Err(VQSBuilderError::InvertedZ(
+                            i + 1,
+                            dp[i],
+                            m0[i],
+                            k,
+                            znd[[k - 1, i]],
+                            znd[[k, i]],
+                        ));
+                    }
+                }
             }
         }
+        // let mut file = File::create("znd.out").expect("Unable to create file");
+        // for j in 0..znd.ncols() {
+        //     let line = (0..znd.nrows())
+        //         .map(|i| format!("{:16.6}", znd[[i, j]])) // Format each number with 16 decimal places and align
+        //         .collect::<Vec<_>>()
+        //         .join(" ");
+        //     writeln!(file, "{:10} {:16.6} {}", j + 1, dp[j], line)
+        //         .expect("Unable to write to file");
+        // }
+        // file.flush().expect("Unable to flush file");
+        // unimplemented!("wrote znd.out");
         sigma_vqs.invert_axis(Axis(0));
         Ok((sigma_vqs, znd))
     }
@@ -330,6 +383,16 @@ impl<'a> VQSBuilder<'a> {
         self.stretching = Some(stretching);
         self
     }
+    pub fn dz_bottom_min(&mut self, dz_bottom_min: &'a f64) -> &mut Self {
+        self.dz_bottom_min = Some(dz_bottom_min);
+        self
+    }
+    fn validate_dz_bottom_min(dz_bottom_min: &f64) -> Result<(), VQSBuilderError> {
+        if *dz_bottom_min < 0. {
+            return Err(VQSBuilderError::InvalidDzBottomMin);
+        }
+        Ok(())
+    }
 }
 
 #[derive(Error, Debug)]
@@ -340,26 +403,24 @@ pub enum VQSBuilderError {
     QuadraticTransformBuilderError(#[from] QuadraticTransformBuilderError),
     #[error(transparent)]
     STransformBuilderError(#[from] STransformBuilderError),
+    #[error("dz_bottom_min must be >= 0")]
+    InvalidDzBottomMin,
+    #[error("Failed to find a master vgrid for node id: {0} and depth {1}")]
+    FailedToFindAMasterVgrid(usize, f64),
+    #[error("Failed to find a bottom for node id: {0}, depth {1}, z3={2}, z_mas={3}")]
+    FailedToFindABottom(usize, f64, f64, Array1<f64>),
+    #[error("Inverted Z for node id: {0}, depth {1}, m0[i]={2}, k={3}, znd[[k-1, i]]={4}, znd[[k, i]]={5}")]
+    InvertedZ(usize, f64, usize, usize, f64, f64),
 }
 
+#[derive(Default)]
 pub struct VQSKMeansBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
     nclusters: Option<&'a usize>,
     stretching: Option<&'a StretchingFunction<'a>>,
     shallow_threshold: Option<&'a f64>,
     shallow_levels: Option<&'a usize>,
-}
-
-impl<'a> Default for VQSKMeansBuilder<'a> {
-    fn default() -> Self {
-        Self {
-            hgrid: None,
-            stretching: None,
-            nclusters: None,
-            shallow_levels: Some(&1),
-            shallow_threshold: Some(&0.),
-        }
-    }
+    dz_bottom_min: Option<&'a f64>,
 }
 
 impl<'a> VQSKMeansBuilder<'a> {
@@ -379,6 +440,9 @@ impl<'a> VQSKMeansBuilder<'a> {
         let shallow_levels = self.shallow_levels.ok_or_else(|| {
             VQSKMeansBuilderError::UninitializedFieldError("shallow_levels".to_string())
         })?;
+        let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
+            VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
+        })?;
         let mut hsm = kmeans_hsm(hgrid, nclusters, shallow_threshold)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());
         let mut nlevels = Vec::<usize>::with_capacity(*nclusters);
@@ -390,6 +454,7 @@ impl<'a> VQSKMeansBuilder<'a> {
             .depths(&hsm)
             .nlevels(&nlevels)
             .stretching(&stretching)
+            .dz_bottom_min(&dz_bottom_min)
             .build()?)
     }
 
@@ -411,6 +476,10 @@ impl<'a> VQSKMeansBuilder<'a> {
     }
     pub fn shallow_levels(&mut self, shallow_levels: &'a usize) -> &mut Self {
         self.shallow_levels = Some(shallow_levels);
+        self
+    }
+    pub fn dz_bottom_min(&mut self, dz_bottom_min: &'a f64) -> &mut Self {
+        self.dz_bottom_min = Some(dz_bottom_min);
         self
     }
 }
