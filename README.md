@@ -18,7 +18,7 @@ This one is the simplest and most straightforward, used to build SZ grids.
 Example usage for gen_sz:
 
 ```bash
-cargo run --bin --release gen_sz -- /path/to/hgrid /path/to/vgrid.in.out --slevels=10
+cargo run --release --bin gen_sz -- /path/to/hgrid /path/to/vgrid.in.out --slevels=10
 ```
 
 ### gen_vqs
