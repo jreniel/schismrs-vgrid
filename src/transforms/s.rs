@@ -209,6 +209,9 @@ impl<'a> STransformBuilder<'a> {
     }
     fn validate_nlevels(nlevels: &Vec<usize>) -> Result<(), STransformBuilderError> {
         let mut prev_nlevel = nlevels[0];
+        if prev_nlevel < 2 {
+            return Err(STransformBuilderError::InvalidFirstLevel);
+        }
         for &nlevel in &nlevels[1..] {
             if nlevel <= prev_nlevel {
                 return Err(STransformBuilderError::InvalidNLevels);
@@ -267,6 +270,8 @@ pub enum STransformBuilderError {
     DepthsAndLevelsSizeMismatch(usize, usize),
     #[error("depths vector must be strictly increasing")]
     InvalidDepths,
+    #[error("First level in nlevels must be >= 2")]
+    InvalidFirstLevel,
     #[error("nlevels vector must be strictly increasing")]
     InvalidNLevels,
     #[error("Last depth provided was {0} but it must be greater or equal than {1} which is the deepest point in hgrid.")]
