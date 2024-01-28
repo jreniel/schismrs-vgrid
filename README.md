@@ -42,6 +42,14 @@ This feature in still being tested and is provided here as a proof of concept.
 cargo run --release --bin gen_vqs -- /path/to/hgrid /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. auto --help
 ```
 
+#### Examples of master grid outputs using kmeans clustering.
+
+Below an example output of a 60-cluster kmeans-derived master grids.
+![kmeans-60clusters](./assets/kmeans-60clusters.png)
+
+Zooming in on the shallow nodes, we can see that the number of vertical levels is kept reasonable, which translates into computational economy for shallow nodes.
+![kmeans-zoomed](./assets/kmeans-closeup.png)
+
 ### License
 
 `SPDX-License-Identifier: LicenseRef-schismrs-license`
