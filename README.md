@@ -36,13 +36,11 @@ The line above will run it in `hsm` mode, where you explicitly pass the HSM and 
 However, you can use the `auto` mode instead, which will use k-means clustering to derive and build the master grids, based on the number of clusters.
 This feature in still being tested and is provided here as a proof of concept.
 
+**Hint** You can show a plot of your z_mas configuration by using --show-zmas-plot
+
 ```bash
 cargo run --release --bin gen_vqs -- /path/to/hgrid /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. auto --help
 ```
-
-## Plots:
-
-Coming soon.
 
 ### License
 

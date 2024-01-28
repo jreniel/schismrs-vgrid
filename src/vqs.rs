@@ -2,12 +2,14 @@ use crate::transforms::quadratic::QuadraticTransformBuilder;
 use crate::transforms::quadratic::QuadraticTransformBuilderError;
 use crate::transforms::s::STransformBuilder;
 use crate::transforms::s::STransformBuilderError;
-use crate::transforms::traits::Transform;
+use crate::transforms::traits::{Transform, TransformPlotterError};
 use crate::transforms::StretchingFunction;
 use crate::{kmeans_hsm, KMeansHSMCreateError};
 use ndarray::Array1;
 use ndarray::Array2;
 use ndarray::Axis;
+// use ndarray_stats::QuantileExt;
+use plotly::Plot;
 use schismrs_hgrid::hgrid::Hgrid;
 use std::cmp::min;
 use std::f64::NAN;
@@ -16,13 +18,14 @@ use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
 use thiserror::Error;
-// use ndarray_stats::QuantileExt
 
 pub struct VQS {
     sigma_vqs: Array2<f64>,
-    depths: Array1<f64>,
-    etal: f64,
-    znd: Array2<f64>,
+    // _depths: Array1<f64>,
+    // _etal: f64,
+    _znd: Array2<f64>,
+    // z_mas: Array2<f64>,
+    transform: Box<dyn Transform>,
 }
 
 impl VQS {
@@ -68,69 +71,8 @@ impl VQS {
         self.sigma_vqs.row(level - 1).to_vec()
     }
 
-    pub fn make_html_plot(&self, path: &PathBuf, nbins: usize) -> Result<(), VQSKPlotterError> {
-        if nbins < 2 {
-            return Err(VQSKPlotterError::InvalidNbinsValue(nbins));
-        }
-
-        let min_depth = *self
-            .depths
-            .iter()
-            .filter(|depth| **depth < self.etal)
-            .min_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-
-        let min_index = self
-            .depths
-            .iter()
-            .position(|depth| *depth == min_depth)
-            .unwrap();
-
-        let max_depth = *self
-            .depths
-            .iter()
-            .filter(|depth| **depth < self.etal)
-            .max_by(|a, b| a.partial_cmp(b).unwrap())
-            .unwrap();
-
-        let max_index = self
-            .depths
-            .iter()
-            .position(|depth| *depth == max_depth)
-            .unwrap();
-        let mut samples = Array1::linspace(min_depth, max_depth, nbins);
-        let mut indices = vec![min_index];
-        for i in 1..samples.len() - 1 {
-            let s = samples[i];
-            let (index, closest) = self
-                .depths
-                .iter()
-                .enumerate()
-                .min_by(|&(_, a), &(_, b)| f64::abs(s - a).partial_cmp(&f64::abs(s - b)).unwrap())
-                .unwrap();
-            samples[i] = *closest;
-            indices.push(index);
-        }
-        indices.push(max_index);
-
-        for this_index in indices.iter() {
-            // let this_znd = self
-            //     .znd
-            //     .index_axis(Axis(1), *this_index)
-            //     .iter()
-            //     .filter(|&&x| !x.is_nan())
-            //     .cloned()
-            //     .collect::<Array1<f64>>();
-            dbg!(this_index);
-            // dbg!(self.znd.shape());
-            let this_depth = self.depths[[*this_index]];
-            dbg!(this_depth);
-            let this_znd = self.znd.index_axis(Axis(1), *this_index);
-            dbg!(this_znd);
-        }
-        unimplemented!("stop");
-
-        Ok(())
+    pub fn make_z_mas_plot(&self) -> Result<Plot, TransformPlotterError> {
+        Ok(self.transform.make_zmas_plot()?)
     }
 }
 
@@ -269,9 +211,11 @@ impl<'a> VQSBuilder<'a> {
         let depths = hgrid.depths();
         Ok(VQS {
             sigma_vqs,
-            depths,
-            etal: *etal,
-            znd,
+            // _depths: depths,
+            // _etal: *etal,
+            _znd: znd,
+            // z_mas: z_mas.clone(),
+            transform,
         })
     }
 
@@ -494,12 +438,4 @@ pub enum VQSKMeansBuilderError {
     VQSBuilderError(#[from] VQSBuilderError),
     #[error(transparent)]
     KMeansHSMCreateError(#[from] KMeansHSMCreateError),
-}
-
-#[derive(Error, Debug)]
-pub enum VQSKPlotterError {
-    #[error("The mesh doesn't contain any negative values, there's nothing to plot.")]
-    NoNegativeDepthValuesInMesh,
-    #[error("Expected nbins to be >= 2 but got {0}")]
-    InvalidNbinsValue(usize),
 }

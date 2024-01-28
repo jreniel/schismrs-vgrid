@@ -19,7 +19,8 @@ const VERSION: &'static str = concat! {
 #[command(version = VERSION)]
 struct Cli {
     hgrid_path: PathBuf,
-    output_filepath: PathBuf,
+    #[clap(short, long)]
+    output_filepath: Option<PathBuf>,
     #[clap(short, long)]
     transform: StretchingFunctionKind,
     #[clap(
@@ -39,6 +40,10 @@ struct Cli {
     theta_b: Option<f64>,
     #[clap(long)]
     dz_bottom_min: f64,
+    #[clap(long, action)]
+    show_zmas_plot: bool,
+    #[clap(long)]
+    save_zmas_plot: Option<PathBuf>,
     #[clap(subcommand)]
     mode: Modes,
 }
@@ -124,10 +129,20 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             builder.build()?
         }
     };
-    vqs.write_to_file(&cli.output_filepath)?;
-    // let mut html_out = PathBuf::new();
-    // html_out.push("depth_distribution.html");
-    // vqs.make_html_plot(&html_out, 5)?;
+    if cli.output_filepath.is_some() {
+        vqs.write_to_file(&cli.output_filepath.as_ref().unwrap())?;
+    };
+
+    if cli.show_zmas_plot || cli.save_zmas_plot.is_some() {
+        let zmas_plot = vqs.make_z_mas_plot()?;
+        if cli.show_zmas_plot {
+            zmas_plot.show();
+        }
+    }
+    // let html_out = PathBuf::from("depth_distribution.html");
+    // transform.make_zmas_plot(html_out.to_owned());
+
+    // vqs.make_html_plot(&html_out)?;
     Ok(())
 }
 
