@@ -12,7 +12,7 @@ use thiserror::Error;
 pub fn kmeans_hsm(
     hgrid: &Hgrid,
     nclusters: &usize,
-    shallow_threshold: &f64,
+    etal: &f64,
 ) -> Result<Vec<f64>, KMeansHSMCreateError> {
     log::info!(
         "Begin computing vertical distribution with nclusters={}",
@@ -23,7 +23,7 @@ pub fn kmeans_hsm(
     depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
     depths.dedup();
     // keep only the underwater numbers.
-    depths.retain(|&x| x <= *shallow_threshold);
+    depths.retain(|&x| x <= *etal);
     let depths = Array1::from(depths);
     let depth_len = depths.len();
     let observations = DatasetBase::from(depths.clone().into_shape((depth_len, 1))?);

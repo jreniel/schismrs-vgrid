@@ -364,7 +364,7 @@ pub struct VQSKMeansBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
     nclusters: Option<&'a usize>,
     stretching: Option<&'a StretchingFunction<'a>>,
-    shallow_threshold: Option<&'a f64>,
+    etal: Option<&'a f64>,
     shallow_levels: Option<&'a usize>,
     dz_bottom_min: Option<&'a f64>,
 }
@@ -380,16 +380,17 @@ impl<'a> VQSKMeansBuilder<'a> {
         let nclusters = self.nclusters.ok_or_else(|| {
             VQSKMeansBuilderError::UninitializedFieldError("nclusters".to_string())
         })?;
-        let shallow_threshold = self.shallow_threshold.ok_or_else(|| {
-            VQSKMeansBuilderError::UninitializedFieldError("shallow_threshold".to_string())
-        })?;
+        let etal = self
+            .etal
+            .ok_or_else(|| VQSKMeansBuilderError::UninitializedFieldError("etal".to_string()))?;
         let shallow_levels = self.shallow_levels.ok_or_else(|| {
             VQSKMeansBuilderError::UninitializedFieldError("shallow_levels".to_string())
         })?;
+        Self::validate_shallow_levels(shallow_levels)?;
         let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
             VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
         })?;
-        let mut hsm = kmeans_hsm(hgrid, nclusters, shallow_threshold)?;
+        let mut hsm = kmeans_hsm(hgrid, nclusters, etal)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());
         let mut nlevels = Vec::<usize>::with_capacity(*nclusters);
         for i in *shallow_levels..(*shallow_levels + *nclusters) {
@@ -416,8 +417,8 @@ impl<'a> VQSKMeansBuilder<'a> {
         self.stretching = Some(stretching);
         self
     }
-    pub fn shallow_threshold(&mut self, shallow_threshold: &'a f64) -> &mut Self {
-        self.shallow_threshold = Some(shallow_threshold);
+    pub fn etal(&mut self, etal: &'a f64) -> &mut Self {
+        self.etal = Some(etal);
         self
     }
     pub fn shallow_levels(&mut self, shallow_levels: &'a usize) -> &mut Self {
@@ -427,6 +428,12 @@ impl<'a> VQSKMeansBuilder<'a> {
     pub fn dz_bottom_min(&mut self, dz_bottom_min: &'a f64) -> &mut Self {
         self.dz_bottom_min = Some(dz_bottom_min);
         self
+    }
+    fn validate_shallow_levels(shallow_levels: &'a usize) -> Result<(), VQSKMeansBuilderError> {
+        if *shallow_levels < 2 {
+            return Err(VQSKMeansBuilderError::InvalidShallowLevels);
+        }
+        Ok(())
     }
 }
 
@@ -438,4 +445,6 @@ pub enum VQSKMeansBuilderError {
     VQSBuilderError(#[from] VQSBuilderError),
     #[error(transparent)]
     KMeansHSMCreateError(#[from] KMeansHSMCreateError),
+    #[error("shallow_levels must be >= 2")]
+    InvalidShallowLevels,
 }

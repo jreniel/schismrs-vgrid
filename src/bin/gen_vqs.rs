@@ -69,9 +69,7 @@ enum Modes {
 struct AutoCliOpts {
     #[clap(short, long)]
     clusters: usize,
-    #[clap(short, long)]
-    shallow_threshold: Option<f64>,
-    #[clap(short, long)]
+    #[clap(short, long, default_value = "2")]
     shallow_levels: Option<usize>,
 }
 
@@ -120,11 +118,9 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             builder.stretching(&transform);
             builder.nclusters(&opts.clusters);
             builder.dz_bottom_min(&cli.dz_bottom_min);
+            builder.etal(cli.etal.as_ref().unwrap());
             if let Some(shallow_levels) = &opts.shallow_levels {
                 builder.shallow_levels(shallow_levels);
-            }
-            if let Some(shallow_threshold) = &opts.shallow_threshold {
-                builder.shallow_threshold(shallow_threshold);
             }
             builder.build()?
         }
