@@ -56,7 +56,7 @@ Same as above, but using S-transform instead.
 ![kmeans-60clusters-s](./assets/kmeans-60clusters-s.png)
 ![kmeans-zoomed-s](./assets/kmeans-closeup-s.png)
 
-[It's nice to be able to see the master grid plots in real-time, isn't? =)](./assets/kmeans_master_grids_test.html)
+It's nice to be able to see the master grid plots in real-time, isn't? =)
 
 ### License
 
