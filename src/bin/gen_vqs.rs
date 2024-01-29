@@ -135,10 +135,6 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             zmas_plot.show();
         }
     }
-    // let html_out = PathBuf::from("depth_distribution.html");
-    // transform.make_zmas_plot(html_out.to_owned());
-
-    // vqs.make_html_plot(&html_out)?;
     Ok(())
 }
 

@@ -8,7 +8,6 @@ use crate::{kmeans_hsm, KMeansHSMCreateError};
 use ndarray::Array1;
 use ndarray::Array2;
 use ndarray::Axis;
-// use ndarray_stats::QuantileExt;
 use plotly::Plot;
 use schismrs_hgrid::hgrid::Hgrid;
 use std::cmp::min;
@@ -17,6 +16,7 @@ use std::fmt;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
+use std::rc::Rc;
 use thiserror::Error;
 
 pub struct VQS {
@@ -25,7 +25,7 @@ pub struct VQS {
     // _etal: f64,
     _znd: Array2<f64>,
     // z_mas: Array2<f64>,
-    transform: Box<dyn Transform>,
+    transform: Rc<dyn Transform>,
 }
 
 impl VQS {
@@ -43,6 +43,13 @@ impl VQS {
         self.sigma_vqs.nrows()
     }
 
+    pub fn sigma(&self) -> &Array2<f64> {
+        &self.sigma_vqs
+    }
+
+    pub fn transform(&self) -> Rc<dyn Transform> {
+        self.transform.clone()
+    }
     pub fn bottom_level_indices(&self) -> Vec<usize> {
         let num_columns = self.sigma_vqs.shape()[1];
         let num_rows = self.sigma_vqs.shape()[0];
@@ -159,7 +166,7 @@ impl<'a> VQSBuilder<'a> {
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("dz_bottom_min".to_string()))?;
         Self::validate_dz_bottom_min(dz_bottom_min)?;
-        let transform: Box<dyn Transform> = match stretching {
+        let transform: Rc<dyn Transform> = match stretching {
             StretchingFunction::Quadratic(opts) => {
                 let mut builder = QuadraticTransformBuilder::default();
                 builder.hgrid(hgrid);
@@ -174,7 +181,7 @@ impl<'a> VQSBuilder<'a> {
                         .as_ref()
                         .map(|skew_decay_rate| builder.skew_decay_rate(skew_decay_rate));
                 });
-                Box::new(builder.build()?)
+                Rc::new(builder.build()?)
             }
             StretchingFunction::S(opts) => {
                 let mut builder = STransformBuilder::default();
@@ -194,7 +201,7 @@ impl<'a> VQSBuilder<'a> {
                         .as_ref()
                         .map(|theta_f| builder.theta_f(theta_f));
                 });
-                Box::new(builder.build()?)
+                Rc::new(builder.build()?)
             }
         };
         let z_mas = transform.zmas();
@@ -208,7 +215,7 @@ impl<'a> VQSBuilder<'a> {
             transform.a_vqs0(),
             dz_bottom_min,
         )?;
-        let depths = hgrid.depths();
+        // let depths = hgrid.depths();
         Ok(VQS {
             sigma_vqs,
             // _depths: depths,

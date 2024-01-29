@@ -10,6 +10,8 @@ pub struct STransform {
     zmas: Array2<f64>,
     etal: f64,
     a_vqs0: f64,
+    theta_f: f64,
+    theta_b: f64,
 }
 
 impl Transform for STransform {
@@ -24,6 +26,7 @@ impl Transform for STransform {
     }
 }
 
+#[derive(Default)]
 pub struct STransformBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
     etal: Option<&'a f64>,
@@ -34,21 +37,21 @@ pub struct STransformBuilder<'a> {
     theta_f: Option<&'a f64>,
 }
 
-impl<'a> Default for STransformBuilder<'a> {
-    fn default() -> Self {
-        Self {
-            etal: Some(&0.),
-            hgrid: None,
-            depths: None,
-            nlevels: None,
-            a_vqs0: Some(&-1.),
-            // theta_b: Some(&0.001),
-            theta_b: None,
-            // theta_f: Some(&1.),
-            theta_f: None,
-        }
-    }
-}
+// impl<'a> Default for STransformBuilder<'a> {
+//     fn default() -> Self {
+//         Self {
+//             etal: Some(&0.),
+//             hgrid: None,
+//             depths: None,
+//             nlevels: None,
+//             a_vqs0: Some(&-1.),
+//             // theta_b: Some(&0.001),
+//             theta_b: None,
+//             // theta_f: Some(&1.),
+//             theta_f: None,
+//         }
+//     }
+// }
 
 impl<'a> STransformBuilder<'a> {
     pub fn build(&self) -> Result<STransform, STransformBuilderError> {
@@ -79,6 +82,8 @@ impl<'a> STransformBuilder<'a> {
             zmas,
             etal: *etal,
             a_vqs0: *a_vqs0,
+            theta_f: *theta_f,
+            theta_b: *theta_b,
         })
     }
 
@@ -202,7 +207,7 @@ impl<'a> STransformBuilder<'a> {
     }
 
     fn validate_theta_f(theta_f: &f64) -> Result<(), STransformBuilderError> {
-        if !(*theta_f >= 0.) {
+        if *theta_f <= 0. || *theta_f > 20. {
             return Err(STransformBuilderError::InvalidThetaF(*theta_f));
         };
         Ok(())
@@ -280,6 +285,6 @@ pub enum STransformBuilderError {
     InvalidAVqs0(f64),
     #[error("theta_b must be in [0., 1.], but got {0}")]
     InvalidThetaB(f64),
-    #[error("theta_f must be larger or equal than 0, but got {0}")]
+    #[error("theta_f must be larger than 0, and smaller or equal to 20., but got {0}")]
     InvalidThetaF(f64),
 }
