@@ -18,8 +18,12 @@ This one is the simplest and most straightforward, used to build SZ grids.
 Example usage for gen_sz:
 
 ```bash
-cargo run --release --bin gen_sz -- /path/to/hgrid /path/to/vgrid.in.out --slevels=10
+cargo run --release --bin gen_sz -- /path/to/hgrid --show-plot --slevels=20 --theta-f=5 --theta-b=0.7 --critical-depth=5. -o vgrid.in
 ```
+
+The command above should show the following plot:
+![sz-20levels](./assets/sz_20levels.png)
+Naturally, the depth levels shown will depend on your input hgrid, but the vertical node distribution should be the same regardless.
 
 ### gen_vqs
 
