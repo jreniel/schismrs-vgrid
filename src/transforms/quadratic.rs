@@ -40,19 +40,24 @@ impl<'a> QuadraticTransformBuilder<'a> {
         let depths = self.depths.ok_or_else(|| {
             QuadraticTransformBuilderError::UninitializedFieldError("depths".to_string())
         })?;
+        Self::validate_depths(hgrid, depths)?;
         let nlevels = self.nlevels.ok_or_else(|| {
             QuadraticTransformBuilderError::UninitializedFieldError("nlevels".to_string())
         })?;
+        Self::validate_nlevels(nlevels)?;
+        Self::validate_depths_and_nlevels(depths, nlevels)?;
         let etal = self.etal.ok_or_else(|| {
             QuadraticTransformBuilderError::UninitializedFieldError("etal".to_string())
         })?;
+        Self::validate_etal(etal, &depths[0])?;
         let a_vqs0 = self.a_vqs0.ok_or_else(|| {
             QuadraticTransformBuilderError::UninitializedFieldError("a_vqs0".to_string())
         })?;
+        Self::validate_a_vqs0(a_vqs0)?;
         let skew_decay_rate = self.skew_decay_rate.ok_or_else(|| {
             QuadraticTransformBuilderError::UninitializedFieldError("skew_decay_rate".to_string())
         })?;
-        Self::validate(hgrid, depths, nlevels, a_vqs0)?;
+        // Self::validate_skew_decay_rate
         let zmas = Self::build_zmas(depths, nlevels, etal, a_vqs0, skew_decay_rate);
         Ok(QuadraticTransform {
             zmas,
@@ -150,16 +155,10 @@ impl<'a> QuadraticTransformBuilder<'a> {
         a_vqs
     }
 
-    fn validate(
-        hgrid: &Hgrid,
+    fn validate_depths_and_nlevels(
         depths: &Vec<f64>,
         nlevels: &Vec<usize>,
-        a_vqs0: &f64,
     ) -> Result<(), QuadraticTransformBuilderError> {
-        if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
-            return Err(QuadraticTransformBuilderError::InvalidAVqs0(*a_vqs0));
-        }
-
         let depth_len = depths.len();
         let nlevels_len = nlevels.len();
         if depth_len != nlevels_len {
@@ -168,11 +167,24 @@ impl<'a> QuadraticTransformBuilder<'a> {
                 nlevels_len,
             ));
         }
-        Self::validate_depths(hgrid, depths)?;
-        Self::validate_nlevels(nlevels)?;
         Ok(())
     }
 
+    fn validate_a_vqs0(a_vqs0: &f64) -> Result<(), QuadraticTransformBuilderError> {
+        if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
+            return Err(QuadraticTransformBuilderError::InvalidAVqs0(*a_vqs0));
+        }
+        Ok(())
+    }
+
+    fn validate_etal(etal: &f64, depths0: &f64) -> Result<(), QuadraticTransformBuilderError> {
+        if *etal >= *depths0 {
+            return Err(QuadraticTransformBuilderError::InvalidEtalValue(
+                *depths0, *etal,
+            ));
+        }
+        Ok(())
+    }
     fn validate_depths(
         hgrid: &Hgrid,
         depths: &Vec<f64>,
@@ -207,14 +219,13 @@ impl<'a> QuadraticTransformBuilder<'a> {
             return Err(QuadraticTransformBuilderError::InvalidFirstLevel);
         }
         for &nlevel in &nlevels[1..] {
-            if nlevel <= prev_nlevel {
+            if nlevel < prev_nlevel {
                 return Err(QuadraticTransformBuilderError::InvalidNLevels);
             }
             prev_nlevel = nlevel;
         }
         Ok(())
     }
-
     pub fn hgrid(&mut self, hgrid: &'a Hgrid) -> &mut Self {
         self.hgrid = Some(hgrid);
         self
@@ -260,6 +271,8 @@ pub enum QuadraticTransformBuilderError {
     InvalidLastDepth(f64, f64),
     #[error("a_vqs0 must be < 0 and >= -1, but got {0}")]
     InvalidAVqs0(f64),
+    #[error("etal must be smaller than the first depth, (which is {0}) but got {1}")]
+    InvalidEtalValue(f64, f64),
 }
 
 #[derive(Clone, Debug)]

@@ -61,22 +61,29 @@ impl<'a> STransformBuilder<'a> {
         let depths = self
             .depths
             .ok_or_else(|| STransformBuilderError::UninitializedFieldError("depths".to_string()))?;
+        Self::validate_depths(hgrid, depths)?;
         let nlevels = self.nlevels.ok_or_else(|| {
             STransformBuilderError::UninitializedFieldError("nlevels".to_string())
         })?;
+        Self::validate_nlevels(nlevels)?;
+        Self::validate_depths_and_nlevels(depths, nlevels)?;
         let etal = self
             .etal
             .ok_or_else(|| STransformBuilderError::UninitializedFieldError("etal".to_string()))?;
+        Self::validate_etal(etal, &depths[0])?;
         let a_vqs0 = self
             .a_vqs0
             .ok_or_else(|| STransformBuilderError::UninitializedFieldError("a_vqs0".to_string()))?;
+        Self::validate_a_vqs0(a_vqs0)?;
         let theta_b = self.theta_b.ok_or_else(|| {
             STransformBuilderError::UninitializedFieldError("theta_b".to_string())
         })?;
+        Self::validate_theta_b(theta_b)?;
         let theta_f = self.theta_f.ok_or_else(|| {
             STransformBuilderError::UninitializedFieldError("theta_f".to_string())
         })?;
-        Self::validate(hgrid, depths, nlevels, a_vqs0, theta_b, theta_f)?;
+        Self::validate_theta_f(theta_f)?;
+        // Self::validate(hgrid, depths, nlevels, a_vqs0, theta_b, theta_f)?;
         let zmas = Self::build_zmas(depths, nlevels, etal, theta_b, theta_f);
         Ok(STransform {
             zmas,
@@ -146,20 +153,10 @@ impl<'a> STransformBuilder<'a> {
         z_mas
     }
 
-    fn validate(
-        hgrid: &Hgrid,
+    fn validate_depths_and_nlevels(
         depths: &Vec<f64>,
         nlevels: &Vec<usize>,
-        a_vqs0: &f64,
-        theta_b: &f64,
-        theta_f: &f64,
     ) -> Result<(), STransformBuilderError> {
-        Self::validate_theta_b(theta_b)?;
-        Self::validate_theta_f(theta_f)?;
-        if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
-            return Err(STransformBuilderError::InvalidAVqs0(*a_vqs0));
-        }
-
         let depth_len = depths.len();
         let nlevels_len = nlevels.len();
         if depth_len != nlevels_len {
@@ -168,11 +165,22 @@ impl<'a> STransformBuilder<'a> {
                 nlevels_len,
             ));
         }
-        Self::validate_depths(hgrid, depths)?;
-        Self::validate_nlevels(nlevels)?;
         Ok(())
     }
 
+    fn validate_a_vqs0(a_vqs0: &f64) -> Result<(), STransformBuilderError> {
+        if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
+            return Err(STransformBuilderError::InvalidAVqs0(*a_vqs0));
+        }
+        Ok(())
+    }
+
+    fn validate_etal(etal: &f64, depths0: &f64) -> Result<(), STransformBuilderError> {
+        if *etal >= *depths0 {
+            return Err(STransformBuilderError::InvalidEtalValue(*depths0, *etal));
+        }
+        Ok(())
+    }
     fn validate_depths(hgrid: &Hgrid, depths: &Vec<f64>) -> Result<(), STransformBuilderError> {
         let mut prev_depth = depths[0];
         for &depth in &depths[1..] {
@@ -217,7 +225,7 @@ impl<'a> STransformBuilder<'a> {
             return Err(STransformBuilderError::InvalidFirstLevel);
         }
         for &nlevel in &nlevels[1..] {
-            if nlevel <= prev_nlevel {
+            if nlevel < prev_nlevel {
                 return Err(STransformBuilderError::InvalidNLevels);
             }
             prev_nlevel = nlevel;
@@ -286,4 +294,6 @@ pub enum STransformBuilderError {
     InvalidThetaB(f64),
     #[error("theta_f must be larger than 0, and smaller or equal to 20., but got {0}")]
     InvalidThetaF(f64),
+    #[error("etal must be smaller than the first depth, (which is {0}) but got {1}")]
+    InvalidEtalValue(f64, f64),
 }
