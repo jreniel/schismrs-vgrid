@@ -1,16 +1,17 @@
-use crate::transforms::s::STransformOpts;
-use crate::transforms::traits::{Transform, TransformPlotterError};
-use crate::transforms::StretchingFunction;
-use crate::vqs::VQSBuilder;
+use libm::sinh;
+use libm::tanh;
+use ndarray::Array;
 use ndarray::Array1;
 use ndarray_stats::QuantileExt;
-use plotly::Plot;
+use plotly::color::NamedColor;
+use plotly::common::{Line, Marker, Mode};
+use plotly::{Plot, Scatter};
 use schismrs_hgrid::Hgrid;
+use std::f64::NAN;
 use std::fmt;
 use std::fs::File;
 use std::io::Write;
 use std::path::PathBuf;
-use std::rc::Rc;
 use thiserror::Error;
 
 pub struct SZ {
@@ -19,7 +20,7 @@ pub struct SZ {
     theta_f: f64,
     theta_b: f64,
     hc: f64, // also known as critical layer depth
-    transform: Rc<dyn Transform>,
+    etal: f64,
 }
 
 impl SZ {
@@ -34,8 +35,35 @@ impl SZ {
     pub fn nvrt(&self) -> usize {
         self.sigma.len() + self.z_array.len() - 1
     }
-    pub fn make_z_mas_plot(&self) -> Result<Plot, TransformPlotterError> {
-        Ok(self.transform.make_zmas_plot()?)
+    pub fn make_vertical_distribution_plot(&self, nbins: usize) -> Result<Plot, SZPlotError> {
+        if nbins < 2 {
+            return Err(SZPlotError::InvalidNbinsValue(nbins));
+        }
+        let mut plot = Plot::new();
+        let xdepths = Array::linspace(self.z_array[self.z_array.len() - 1], -self.hc, nbins);
+        for (i, xdepth) in xdepths.iter().enumerate() {
+            if i == xdepths.len() {
+                break;
+            }
+            let ydepths = self.compute_zcor(xdepth);
+            let trace = Scatter::new(vec![*xdepth; self.sigma.len()], ydepths.to_vec())
+                .mode(Mode::LinesMarkers)
+                .line(Line::new().color(NamedColor::Blue))
+                .marker(Marker::new().color(NamedColor::Black));
+            plot.add_trace(trace);
+        }
+        Ok(plot)
+    }
+    fn compute_zcor(&self, bottom: &f64) -> Array1<f64> {
+        let mut zcor = Array1::from_elem(self.sigma.len(), NAN);
+        let hc = -self.hc;
+        for (i, sigma) in self.sigma.iter().enumerate() {
+            let cs = (1. - self.theta_b) * sinh(self.theta_f * sigma) / sinh(self.theta_f)
+                + self.theta_b * (tanh(self.theta_f * (sigma + 0.5)) - tanh(self.theta_f * 0.5))
+                    / (2. * tanh(self.theta_f * 0.5));
+            zcor[i] = -(self.etal * (1. + sigma) + hc * sigma + (bottom - hc) * cs);
+        }
+        zcor
     }
 }
 
@@ -67,8 +95,7 @@ pub struct SZBuilder<'a> {
     theta_b: Option<&'a f64>,
     theta_f: Option<&'a f64>,
     critical_depth: Option<&'a f64>,
-    a_vqs0: Option<&'a f64>,
-    dz_bottom_min: Option<&'a f64>,
+    etal: Option<&'a f64>,
 }
 
 impl<'a> SZBuilder<'a> {
@@ -84,23 +111,21 @@ impl<'a> SZBuilder<'a> {
             .theta_f
             .as_ref()
             .ok_or_else(|| SZBuilderError::UninitializedFieldError("theta_f".to_string()))?;
+        Self::validate_theta_f(theta_f)?;
         let theta_b = self
             .theta_b
             .as_ref()
             .ok_or_else(|| SZBuilderError::UninitializedFieldError("theta_b".to_string()))?;
+        Self::validate_theta_b(theta_b)?;
         let critical_depth = self
             .critical_depth
             .as_ref()
             .ok_or_else(|| SZBuilderError::UninitializedFieldError("critical_depth".to_string()))?;
         Self::validate_critical_depth(critical_depth)?;
-        let a_vqs0 = self
-            .a_vqs0
+        let etal = self
+            .etal
             .as_ref()
-            .ok_or_else(|| SZBuilderError::UninitializedFieldError("a_vqs0".to_string()))?;
-        let dz_bottom_min = self
-            .dz_bottom_min
-            .as_ref()
-            .ok_or_else(|| SZBuilderError::UninitializedFieldError("dz_bottom_min".to_string()))?;
+            .ok_or_else(|| SZBuilderError::UninitializedFieldError("etal".to_string()))?;
         let depths = hgrid.depths();
         let deepest_point = depths.min()?;
         let z_array: Array1<f64> = match &self.zlevels {
@@ -110,34 +135,32 @@ impl<'a> SZBuilder<'a> {
                 Array1::from_vec(zlevels.to_vec())
             }
         };
-        let s_transform_opts = STransformOpts {
-            etal: Some(*critical_depth),
-            a_vqs0: Some(*a_vqs0),
-            theta_b: Some(*theta_b),
-            theta_f: Some(*theta_f),
-        };
-        let stretching = StretchingFunction::S(Some(s_transform_opts));
-        let vqs = VQSBuilder::default()
-            .hgrid(&hgrid)
-            .depths(&vec![-*deepest_point])
-            .nlevels(&vec![**slevels])
-            .stretching(&stretching)
-            .dz_bottom_min(*dz_bottom_min)
-            .build()
-            .unwrap();
-        let sigma = vqs.sigma().column(0).to_owned();
+        let sigma = Array::linspace(-1., 0., **slevels);
         Ok(SZ {
             sigma,
             z_array,
             theta_f: **theta_f,
             theta_b: **theta_b,
             hc: **critical_depth,
-            transform: vqs.transform(),
+            etal: **etal,
         })
+    }
+    fn validate_theta_b(theta_b: &f64) -> Result<(), SZBuilderError> {
+        if !(0.0 <= *theta_b && *theta_b <= 1.0) {
+            return Err(SZBuilderError::InvalidThetaB(*theta_b));
+        };
+        Ok(())
     }
     fn validate_critical_depth(critical_depth: &f64) -> Result<(), SZBuilderError> {
         if *critical_depth < 5. {
             return Err(SZBuilderError::InvalidCriticalDepth(*critical_depth));
+        };
+        Ok(())
+    }
+
+    fn validate_theta_f(theta_f: &f64) -> Result<(), SZBuilderError> {
+        if *theta_f <= 0. || *theta_f > 20. {
+            return Err(SZBuilderError::InvalidThetaF(*theta_f));
         };
         Ok(())
     }
@@ -182,14 +205,16 @@ impl<'a> SZBuilder<'a> {
         self.critical_depth = Some(critical_depth);
         self
     }
-    pub fn a_vqs0(&mut self, a_vqs0: &'a f64) -> &mut Self {
-        self.a_vqs0 = Some(a_vqs0);
+    pub fn etal(&mut self, etal: &'a f64) -> &mut Self {
+        self.etal = Some(etal);
         self
     }
-    pub fn dz_bottom_min(&mut self, dz_bottom_min: &'a f64) -> &mut Self {
-        self.dz_bottom_min = Some(dz_bottom_min);
-        self
-    }
+}
+
+#[derive(Error, Debug)]
+pub enum SZPlotError {
+    #[error("nbins must be >= 2, but got {0}")]
+    InvalidNbinsValue(usize),
 }
 
 #[derive(Error, Debug)]
@@ -204,7 +229,7 @@ pub enum SZBuilderError {
     InvalidZLevelsValues(f64, f64),
     #[error("theta_b must be in [0., 1.], but got {0}")]
     InvalidThetaB(f64),
-    #[error("theta_f must be larger than 0, or less or equal than 20, but got {0}")]
+    #[error("theta_f must be larger than 0 and less or equal than 20., but got {0}")]
     InvalidThetaF(f64),
     #[error("critical depth must be larger or equal than 5., but got {0}")]
     InvalidCriticalDepth(f64),

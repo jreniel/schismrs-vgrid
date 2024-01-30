@@ -10,8 +10,8 @@ pub struct STransform {
     zmas: Array2<f64>,
     etal: f64,
     a_vqs0: f64,
-    theta_f: f64,
-    theta_b: f64,
+    _theta_f: f64,
+    _theta_b: f64,
 }
 
 impl Transform for STransform {
@@ -82,8 +82,8 @@ impl<'a> STransformBuilder<'a> {
             zmas,
             etal: *etal,
             a_vqs0: *a_vqs0,
-            theta_f: *theta_f,
-            theta_b: *theta_b,
+            _theta_f: *theta_f,
+            _theta_b: *theta_b,
         })
     }
 
@@ -102,9 +102,8 @@ impl<'a> STransformBuilder<'a> {
             for k in 0..nlev {
                 let sigma = (k as f64) / (1. - nlev as f64);
                 let cs = (1. - *theta_b) * sinh(*theta_f * sigma) / sinh(*theta_f)
-                    + *theta_b * (tanh(*theta_f * (sigma * 0.5)) - tanh(*theta_f * 0.5))
-                        / 2.
-                        / tanh(*theta_f * 0.5);
+                    + *theta_b * (tanh(*theta_f * (sigma + 0.5)) - tanh(*theta_f * 0.5))
+                        / (2. * tanh(*theta_f * 0.5));
                 z_mas[[k, m]] = *etal * (1. + sigma) + depths[0] * sigma + (depth - depths[0]) * cs;
             }
         }

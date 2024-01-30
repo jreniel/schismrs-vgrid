@@ -34,9 +34,19 @@ struct Cli {
     etal: Option<f64>,
     #[clap(short, long, default_value = "0.3")]
     skew_decay_rate: Option<f64>,
-    #[clap(short, long)]
+    #[clap(
+        long,
+        help = "Range is (0., 20.]. Values closer to 0. make the transformation \
+                more similar to traditional sigma. Larger values will increase \
+                resolution at the top and bottom."
+    )]
     theta_f: Option<f64>,
-    #[clap(short, long)]
+    #[clap(
+        long,
+        help = "Range is [0., 1.]. For values closer to 0. the surface is \
+                resolved. For values closer to 1., but the surface and bottom \
+                are resolved."
+    )]
     theta_b: Option<f64>,
     #[clap(long)]
     dz_bottom_min: f64,
