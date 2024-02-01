@@ -4,7 +4,7 @@ use schismrs_hgrid::hgrid::Hgrid;
 use schismrs_vgrid::transforms::quadratic::QuadraticTransformOpts;
 use schismrs_vgrid::transforms::s::STransformOpts;
 use schismrs_vgrid::transforms::StretchingFunction;
-use schismrs_vgrid::vqs::{VQSBuilder, VQSKMeansBuilder};
+use schismrs_vgrid::vqs::{VQSAutoBuilder, VQSBuilder, VQSKMeansBuilder};
 use std::process::ExitCode;
 use std::{error::Error, path::PathBuf};
 
@@ -30,7 +30,7 @@ struct Cli {
         help = "|a_vqs0|<=1. -- -1 skew towards bottom, 1. skew towards surface"
     )]
     a_vqs0: Option<f64>,
-    #[clap(short, long, default_value = "0.")]
+    #[clap(short, long, default_value = "0.", help = "defined as positive down")]
     etal: Option<f64>,
     #[clap(short, long, default_value = "0.3")]
     skew_decay_rate: Option<f64>,
@@ -71,12 +71,13 @@ enum StretchingFunctionKind {
 
 #[derive(Subcommand, Debug)]
 enum Modes {
-    Auto(AutoCliOpts),
+    Kmeans(KmeansCliOpts),
     Hsm(HsmCliOpts),
+    Auto(AutoCliOpts),
 }
 
 #[derive(Args, Debug)]
-struct AutoCliOpts {
+struct KmeansCliOpts {
     #[clap(short, long)]
     clusters: usize,
     #[clap(short, long, default_value = "2")]
@@ -91,26 +92,42 @@ struct HsmCliOpts {
     nlevels: Vec<usize>,
 }
 
+#[derive(Args, Debug)]
+struct AutoCliOpts {
+    #[clap(long)]
+    ngrids: usize,
+    #[clap(
+        long,
+        default_value = "1.",
+        help = "This is the first depth below etal. This input is positive down."
+    )]
+    initial_depth: Option<f64>,
+    #[clap(long, default_value = "2")]
+    shallow_levels: Option<usize>,
+    #[clap(long)]
+    max_levels: usize,
+}
+
 fn entrypoint() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
     let cli = Cli::parse();
     let hgrid = Hgrid::try_from(&cli.hgrid_path)?;
     let transform = match cli.transform {
         StretchingFunctionKind::Quadratic => {
-            let quadratic_opts = Some(QuadraticTransformOpts {
-                a_vqs0: cli.a_vqs0.as_ref(),
-                etal: cli.etal.as_ref(),
-                skew_decay_rate: cli.skew_decay_rate.as_ref(),
-            });
+            let quadratic_opts = QuadraticTransformOpts {
+                a_vqs0: cli.a_vqs0.as_ref().unwrap(),
+                etal: cli.etal.as_ref().unwrap(),
+                skew_decay_rate: cli.skew_decay_rate.as_ref().unwrap(),
+            };
             StretchingFunction::Quadratic(quadratic_opts)
         }
         StretchingFunctionKind::S => {
-            let s_opts = Some(STransformOpts {
-                a_vqs0: cli.a_vqs0.as_ref(),
-                etal: cli.etal.as_ref(),
-                theta_b: cli.theta_b.as_ref(),
-                theta_f: cli.theta_f.as_ref(),
-            });
+            let s_opts = STransformOpts {
+                a_vqs0: cli.a_vqs0.as_ref().unwrap(),
+                etal: cli.etal.as_ref().unwrap(),
+                theta_b: cli.theta_b.as_ref().unwrap(),
+                theta_f: cli.theta_f.as_ref().unwrap(),
+            };
             StretchingFunction::S(s_opts)
         }
     };
@@ -122,7 +139,7 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             .stretching(&transform)
             .dz_bottom_min(&cli.dz_bottom_min)
             .build()?,
-        Modes::Auto(opts) => {
+        Modes::Kmeans(opts) => {
             let mut builder = VQSKMeansBuilder::default();
             builder.hgrid(&hgrid);
             builder.stretching(&transform);
@@ -132,6 +149,17 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             if let Some(shallow_levels) = &opts.shallow_levels {
                 builder.shallow_levels(shallow_levels);
             }
+            builder.build()?
+        }
+        Modes::Auto(opts) => {
+            let mut builder = VQSAutoBuilder::default();
+            builder.hgrid(&hgrid);
+            builder.stretching(&transform);
+            builder.ngrids(&opts.ngrids);
+            builder.dz_bottom_min(&cli.dz_bottom_min);
+            builder.initial_depth(&opts.initial_depth.as_ref().unwrap());
+            builder.shallow_levels(&opts.shallow_levels.as_ref().unwrap());
+            builder.max_levels(&opts.max_levels);
             builder.build()?
         }
     };
@@ -151,7 +179,7 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
 fn main() -> ExitCode {
     let exit_code = match entrypoint() {
         Err(e) => {
-            eprintln!("Error: {:?}: {}", e, e);
+            eprintln!("Error: {}", e);
             return ExitCode::FAILURE;
         }
         Ok(_) => ExitCode::SUCCESS,

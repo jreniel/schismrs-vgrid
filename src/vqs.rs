@@ -3,11 +3,14 @@ use crate::transforms::quadratic::QuadraticTransformBuilderError;
 use crate::transforms::s::STransformBuilder;
 use crate::transforms::s::STransformBuilderError;
 use crate::transforms::traits::{Transform, TransformPlotterError};
+use crate::transforms::transforms::StretchingFunctionError;
 use crate::transforms::StretchingFunction;
 use crate::{kmeans_hsm, KMeansHSMCreateError};
 use ndarray::Array1;
 use ndarray::Array2;
 use ndarray::Axis;
+use ndarray_stats::errors::MinMaxError;
+use ndarray_stats::QuantileExt;
 use plotly::Plot;
 use schismrs_hgrid::hgrid::Hgrid;
 use std::cmp::min;
@@ -166,44 +169,7 @@ impl<'a> VQSBuilder<'a> {
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("dz_bottom_min".to_string()))?;
         Self::validate_dz_bottom_min(dz_bottom_min)?;
-        let transform: Rc<dyn Transform> = match stretching {
-            StretchingFunction::Quadratic(opts) => {
-                let mut builder = QuadraticTransformBuilder::default();
-                builder.hgrid(hgrid);
-                builder.depths(depths);
-                builder.nlevels(nlevels);
-                opts.as_ref().map(|opts| {
-                    opts.etal.as_ref().map(|etal| {
-                        builder.etal(etal);
-                    });
-                    opts.a_vqs0.as_ref().map(|a_vqs0| builder.a_vqs0(a_vqs0));
-                    opts.skew_decay_rate
-                        .as_ref()
-                        .map(|skew_decay_rate| builder.skew_decay_rate(skew_decay_rate));
-                });
-                Rc::new(builder.build()?)
-            }
-            StretchingFunction::S(opts) => {
-                let mut builder = STransformBuilder::default();
-                builder.hgrid(hgrid);
-                builder.depths(depths);
-                builder.nlevels(nlevels);
-                opts.as_ref().map(|opts| {
-                    opts.etal.as_ref().map(|etal| {
-                        builder.etal(etal);
-                    });
-
-                    opts.a_vqs0.as_ref().map(|a_vqs0| builder.a_vqs0(a_vqs0));
-                    opts.theta_b
-                        .as_ref()
-                        .map(|theta_b| builder.theta_b(theta_b));
-                    opts.theta_f
-                        .as_ref()
-                        .map(|theta_f| builder.theta_f(theta_f));
-                });
-                Rc::new(builder.build()?)
-            }
-        };
+        let transform = stretching.transform(hgrid, depths, nlevels)?;
         let z_mas = transform.zmas();
         let etal = transform.etal();
         let (sigma_vqs, znd) = Self::build_sigma_vqs(
@@ -364,6 +330,8 @@ pub enum VQSBuilderError {
     FailedToFindABottom(usize, f64, f64, Array1<f64>),
     #[error("Inverted Z for node id: {0}, depth {1}, m0[i]={2}, k={3}, znd[[k-1, i]]={4}, znd[[k, i]]={5}")]
     InvertedZ(usize, f64, usize, usize, f64, f64),
+    #[error(transparent)]
+    StretchingFunctionError(#[from] StretchingFunctionError),
 }
 
 #[derive(Default)]
@@ -454,4 +422,248 @@ pub enum VQSKMeansBuilderError {
     KMeansHSMCreateError(#[from] KMeansHSMCreateError),
     #[error("shallow_levels must be >= 2")]
     InvalidShallowLevels,
+}
+
+#[derive(Default)]
+pub struct VQSAutoBuilder<'a> {
+    hgrid: Option<&'a Hgrid>,
+    ngrids: Option<&'a usize>,
+    stretching: Option<&'a StretchingFunction<'a>>,
+    dz_bottom_min: Option<&'a f64>,
+    initial_depth: Option<&'a f64>,
+    shallow_levels: Option<&'a usize>,
+    max_levels: Option<&'a usize>,
+}
+
+impl<'a> VQSAutoBuilder<'a> {
+    pub fn build(&self) -> Result<VQS, VQSAutoBuilderError> {
+        let hgrid = self
+            .hgrid
+            .ok_or_else(|| VQSAutoBuilderError::UninitializedFieldError("hgrid".to_string()))?;
+        let stretching = self.stretching.ok_or_else(|| {
+            VQSAutoBuilderError::UninitializedFieldError("stretching".to_string())
+        })?;
+        let ngrids = self
+            .ngrids
+            .ok_or_else(|| VQSAutoBuilderError::UninitializedFieldError("ngrids".to_string()))?;
+        Self::validate_ngrids(ngrids)?;
+        let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
+            VQSAutoBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
+        })?;
+        VQSBuilder::validate_dz_bottom_min(dz_bottom_min)?;
+        let initial_depth = self.initial_depth.ok_or_else(|| {
+            VQSAutoBuilderError::UninitializedFieldError("initial_depth".to_string())
+        })?;
+        Self::validate_initial_depth(initial_depth, stretching.etal())?;
+        let shallow_levels = self.shallow_levels.ok_or_else(|| {
+            VQSAutoBuilderError::UninitializedFieldError("shallow_levels".to_string())
+        })?;
+        Self::validate_shallow_levels(shallow_levels)?;
+        let max_levels = self.max_levels.ok_or_else(|| {
+            VQSAutoBuilderError::UninitializedFieldError("max_levels".to_string())
+        })?;
+        Self::validate_max_levels(shallow_levels, max_levels)?;
+        let (hsm, nlevels) = Self::build_hsm_and_nlevels(
+            hgrid,
+            ngrids,
+            initial_depth,
+            shallow_levels,
+            max_levels,
+            // stretching,
+        )?;
+        Ok(VQSBuilder::default()
+            .hgrid(&hgrid)
+            .depths(&hsm)
+            .nlevels(&nlevels)
+            .stretching(&stretching)
+            .dz_bottom_min(&dz_bottom_min)
+            .build()?)
+    }
+
+    fn validate_ngrids(ngrids: &usize) -> Result<(), VQSAutoBuilderError> {
+        if *ngrids < 2 {
+            return Err(VQSAutoBuilderError::InvalidNgridsValue(*ngrids));
+        }
+        Ok(())
+    }
+
+    fn validate_shallow_levels(shallow_levels: &usize) -> Result<(), VQSAutoBuilderError> {
+        if *shallow_levels < 2 {
+            return Err(VQSAutoBuilderError::InvalidShallowLevels(*shallow_levels));
+        }
+        Ok(())
+    }
+    fn validate_max_levels(
+        shallow_levels: &usize,
+        max_levels: &usize,
+    ) -> Result<(), VQSAutoBuilderError> {
+        if *max_levels < *shallow_levels {
+            return Err(VQSAutoBuilderError::InvalidMaxLevels(
+                *shallow_levels,
+                *max_levels,
+            ));
+        }
+        Ok(())
+    }
+
+    fn exponential_samples(start: f64, end: f64, steps: usize) -> Vec<f64> {
+        let mut samples = Vec::with_capacity(steps);
+        let scale = (end / start).powf(1.0 / (steps as f64 - 1.0));
+
+        for i in 0..steps {
+            samples.push(start * scale.powf(i as f64));
+        }
+
+        samples
+    }
+
+    fn build_hsm_and_nlevels(
+        hgrid: &Hgrid,
+        ngrids: &'a usize,
+        initial_depth: &'a f64,
+        shallow_levels: &usize,
+        max_levels: &usize,
+        // stretching: &'a StretchingFunction,
+    ) -> Result<(Vec<f64>, Vec<usize>), VQSAutoBuilderError> {
+        let max_depth = -hgrid.depths().min()?;
+        let x1 = *shallow_levels as f64;
+        let y1 = *initial_depth;
+        let x2 = *max_levels as f64;
+        let y2 = max_depth;
+        let b = (y2 / y1).powf(1.0 / (x2 - x1));
+        let a = y1 / b.powf(x1);
+        let exp_function = |depth: f64| -> f64 { (depth / a).log(b) };
+        let mut samples = Self::exponential_samples(*initial_depth, max_depth.clone(), *ngrids);
+        samples[0] = *initial_depth;
+        samples[*ngrids - 1] = max_depth;
+        let mut hsm = Vec::new();
+        let mut levels = Vec::new();
+        // let mut min_dz = NAN;
+        // let mut validated = false;
+        for this_depth in samples.iter() {
+            let mut level = exp_function(*this_depth).round() as usize;
+            if level < *shallow_levels {
+                level = *shallow_levels;
+            } else {
+                // let mut zmas;
+                // let mut min_diff;
+                // while {
+                //     zmas = match stretching {
+                //         StretchingFunction::Quadratic(opts) => {
+                //             if !validated {
+                //                 QuadraticTransformBuilder::validate_etal(opts.etal, &samples[0])?;
+                //                 QuadraticTransformBuilder::validate_a_vqs0(opts.a_vqs0)?;
+                //                 min_dz = samples[0] - opts.etal;
+                //                 validated = true;
+                //             }
+                //             QuadraticTransformBuilder::build_zmas(
+                //                 &vec![*this_depth],
+                //                 &vec![level],
+                //                 opts.etal,
+                //                 opts.a_vqs0,
+                //                 opts.skew_decay_rate,
+                //             )
+                //         }
+                //         StretchingFunction::S(opts) => {
+                //             if !validated {
+                //                 STransformBuilder::validate_etal(opts.etal, &samples[0])?;
+                //                 STransformBuilder::validate_theta_b(opts.theta_b)?;
+                //                 min_dz = samples[0] - opts.etal;
+                //                 validated = true;
+                //             }
+                //             STransformBuilder::build_zmas(
+                //                 &vec![*this_depth],
+                //                 &vec![level],
+                //                 opts.etal,
+                //                 opts.theta_b,
+                //                 opts.theta_f,
+                //             )
+                //         }
+                //     };
+
+                //     min_diff = (zmas[[1, 0]] - zmas[[0, 0]]).abs();
+                //     for i in 0..zmas.len() - 1 {
+                //         let diff = (zmas[[i + 1, 0]] - zmas[[i, 0]]).abs();
+                //         if diff < min_diff {
+                //             min_diff = diff;
+                //         }
+                //     }
+
+                //     min_diff < min_dz
+                // } {
+                //     if level > *shallow_levels {
+                //         level -= 1;
+                //     } else {
+                //         break;
+                //     }
+                // }
+            }
+            hsm.push(*this_depth);
+            levels.push(level);
+        }
+        Ok((hsm, levels))
+    }
+
+    fn validate_initial_depth(
+        initial_depth: &'a f64,
+        etal: &'a f64,
+    ) -> Result<(), VQSAutoBuilderError> {
+        if *etal >= *initial_depth {
+            return Err(VQSAutoBuilderError::InvalidInitialDepth(
+                *initial_depth,
+                *etal,
+            ));
+        }
+        Ok(())
+    }
+
+    pub fn hgrid(&mut self, hgrid: &'a Hgrid) -> &mut Self {
+        self.hgrid = Some(hgrid);
+        self
+    }
+    pub fn ngrids(&mut self, ngrids: &'a usize) -> &mut Self {
+        self.ngrids = Some(ngrids);
+        self
+    }
+    pub fn stretching(&mut self, stretching: &'a StretchingFunction) -> &mut Self {
+        self.stretching = Some(stretching);
+        self
+    }
+    pub fn dz_bottom_min(&mut self, dz_bottom_min: &'a f64) -> &mut Self {
+        self.dz_bottom_min = Some(dz_bottom_min);
+        self
+    }
+    pub fn initial_depth(&mut self, initial_depth: &'a f64) -> &mut Self {
+        self.initial_depth = Some(initial_depth);
+        self
+    }
+    pub fn shallow_levels(&mut self, shallow_levels: &'a usize) -> &mut Self {
+        self.shallow_levels = Some(shallow_levels);
+        self
+    }
+    pub fn max_levels(&mut self, max_levels: &'a usize) -> &mut Self {
+        self.max_levels = Some(max_levels);
+        self
+    }
+}
+#[derive(Error, Debug)]
+pub enum VQSAutoBuilderError {
+    #[error("Unitialized field on VQSAutoBuilder: {0}")]
+    UninitializedFieldError(String),
+    #[error(transparent)]
+    VQSBuilderError(#[from] VQSBuilderError),
+    #[error("shallow_levels must be >= 2 but got {0}")]
+    InvalidShallowLevels(usize),
+    #[error("max_levels must be > shallow_levels but got shallow_levels={0} and max_levels={1}")]
+    InvalidMaxLevels(usize, usize),
+    #[error("initial_depth must be > than etal, but got initial_depth={0} and etal={1}")]
+    InvalidInitialDepth(f64, f64),
+    #[error("ngrids must be >= 2 but got {0}")]
+    InvalidNgridsValue(usize),
+    #[error(transparent)]
+    MinMaxError(#[from] MinMaxError),
+    #[error(transparent)]
+    STransformBuilderError(#[from] STransformBuilderError),
+    #[error(transparent)]
+    QuadraticTransformBuilderError(#[from] QuadraticTransformBuilderError),
 }

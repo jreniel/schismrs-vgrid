@@ -83,7 +83,6 @@ impl<'a> STransformBuilder<'a> {
             STransformBuilderError::UninitializedFieldError("theta_f".to_string())
         })?;
         Self::validate_theta_f(theta_f)?;
-        // Self::validate(hgrid, depths, nlevels, a_vqs0, theta_b, theta_f)?;
         let zmas = Self::build_zmas(depths, nlevels, etal, theta_b, theta_f);
         Ok(STransform {
             zmas,
@@ -94,7 +93,7 @@ impl<'a> STransformBuilder<'a> {
         })
     }
 
-    fn build_zmas(
+    pub fn build_zmas(
         depths: &Vec<f64>,
         nlevels: &Vec<usize>,
         etal: &f64,
@@ -175,7 +174,7 @@ impl<'a> STransformBuilder<'a> {
         Ok(())
     }
 
-    fn validate_etal(etal: &f64, depths0: &f64) -> Result<(), STransformBuilderError> {
+    pub fn validate_etal(etal: &f64, depths0: &f64) -> Result<(), STransformBuilderError> {
         if *etal >= *depths0 {
             return Err(STransformBuilderError::InvalidEtalValue(*depths0, *etal));
         }
@@ -206,14 +205,14 @@ impl<'a> STransformBuilder<'a> {
         Ok(())
     }
 
-    fn validate_theta_b(theta_b: &f64) -> Result<(), STransformBuilderError> {
+    pub fn validate_theta_b(theta_b: &f64) -> Result<(), STransformBuilderError> {
         if !(0.0 <= *theta_b && *theta_b <= 1.0) {
             return Err(STransformBuilderError::InvalidThetaB(*theta_b));
         };
         Ok(())
     }
 
-    fn validate_theta_f(theta_f: &f64) -> Result<(), STransformBuilderError> {
+    pub fn validate_theta_f(theta_f: &f64) -> Result<(), STransformBuilderError> {
         if *theta_f <= 0. || *theta_f > 20. {
             return Err(STransformBuilderError::InvalidThetaF(*theta_f));
         };
@@ -266,12 +265,38 @@ impl<'a> STransformBuilder<'a> {
 
 #[derive(Clone, Debug)]
 pub struct STransformOpts<'a> {
-    pub etal: Option<&'a f64>,
-    pub a_vqs0: Option<&'a f64>,
-    pub theta_b: Option<&'a f64>,
-    pub theta_f: Option<&'a f64>,
+    pub etal: &'a f64,
+    pub a_vqs0: &'a f64,
+    pub theta_b: &'a f64,
+    pub theta_f: &'a f64,
 }
 
+impl<'a> STransformOpts<'a> {
+    pub fn new() -> Self {
+        Self {
+            etal: &0.,
+            a_vqs0: &0.,
+            theta_b: &0.,
+            theta_f: &0.001,
+        }
+    }
+    pub fn etal(&mut self, etal: &'a f64) -> &mut Self {
+        self.etal = etal;
+        self
+    }
+    pub fn a_vqs0(&mut self, a_vqs0: &'a f64) -> &mut Self {
+        self.a_vqs0 = a_vqs0;
+        self
+    }
+    pub fn theta_b(&mut self, theta_b: &'a f64) -> &mut Self {
+        self.theta_b = theta_b;
+        self
+    }
+    pub fn theta_f(&mut self, theta_f: &'a f64) -> &mut Self {
+        self.theta_f = theta_f;
+        self
+    }
+}
 #[derive(Error, Debug)]
 pub enum STransformBuilderError {
     #[error("Unitialized field on STransformBuilder: {0}")]

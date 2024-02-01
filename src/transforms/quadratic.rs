@@ -66,7 +66,7 @@ impl<'a> QuadraticTransformBuilder<'a> {
         })
     }
 
-    fn build_zmas(
+    pub fn build_zmas(
         depths: &Vec<f64>,
         nlevels: &Vec<usize>,
         etal: &f64,
@@ -170,14 +170,14 @@ impl<'a> QuadraticTransformBuilder<'a> {
         Ok(())
     }
 
-    fn validate_a_vqs0(a_vqs0: &f64) -> Result<(), QuadraticTransformBuilderError> {
+    pub fn validate_a_vqs0(a_vqs0: &f64) -> Result<(), QuadraticTransformBuilderError> {
         if *a_vqs0 < -1.0 || *a_vqs0 > 1.0 {
             return Err(QuadraticTransformBuilderError::InvalidAVqs0(*a_vqs0));
         }
         Ok(())
     }
 
-    fn validate_etal(etal: &f64, depths0: &f64) -> Result<(), QuadraticTransformBuilderError> {
+    pub fn validate_etal(etal: &f64, depths0: &f64) -> Result<(), QuadraticTransformBuilderError> {
         if *etal >= *depths0 {
             return Err(QuadraticTransformBuilderError::InvalidEtalValue(
                 *depths0, *etal,
@@ -277,7 +277,29 @@ pub enum QuadraticTransformBuilderError {
 
 #[derive(Clone, Debug)]
 pub struct QuadraticTransformOpts<'a> {
-    pub etal: Option<&'a f64>,
-    pub a_vqs0: Option<&'a f64>,
-    pub skew_decay_rate: Option<&'a f64>,
+    pub etal: &'a f64,
+    pub a_vqs0: &'a f64,
+    pub skew_decay_rate: &'a f64,
+}
+
+impl<'a> QuadraticTransformOpts<'a> {
+    pub fn new() -> Self {
+        Self {
+            etal: &0.,
+            a_vqs0: &0.,
+            skew_decay_rate: &0.03,
+        }
+    }
+    pub fn etal(&mut self, etal: &'a f64) -> &mut Self {
+        self.etal = etal;
+        self
+    }
+    pub fn a_vqs0(&mut self, a_vqs0: &'a f64) -> &mut Self {
+        self.a_vqs0 = a_vqs0;
+        self
+    }
+    pub fn skew_decay_rate(&mut self, skew_decay_rate: &'a f64) -> &mut Self {
+        self.skew_decay_rate = skew_decay_rate;
+        self
+    }
 }

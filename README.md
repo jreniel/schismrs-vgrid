@@ -31,24 +31,23 @@ Currently, there are 2 transforms supported: quadratic and s.
 
 Example usage for gen_vqs:
 
-```bash
-cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. hsm --depths 50.0 60.0 80.0 110.0 150.0 200.0 260.0 330.0 410.0 500.0 600.0 8426.0 --nlevels 21 22 23 24 25 26 27 28 29 30 31 32
-```
+There are three modes in which gen_vqs can be used:
 
-The line above will run it in `hsm` mode, where you explicitly pass the HSM and levels array.
+- hsm: explicitly pass master grid depts and levels
+- kmeans: Uses kmeans clustering to derive an hsm array
+- auto: Uses an exponential function to build master grids
 
-However, you can use the `auto` mode instead, which will use k-means clustering to derive and build the master grids, based on the number of clusters.
-This feature in still being tested and is provided here as a proof of concept.
-
-**Hint** You can show a plot of your z_mas configuration by using --show-zmas-plot
+#### hsm mode
 
 ```bash
-cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. auto --clusters 60
+cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --show-zmas-plot --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. hsm --depths 50.0 60.0 80.0 110.0 150.0 200.0 260.0 330.0 410.0 500.0 600.0 8426.0 --nlevels 21 22 23 24 25 26 27 28 29 30 31 32
 ```
 
----
+#### kmeans mode
 
-#### Examples of master grid outputs using kmeans clustering.
+```bash
+cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. kmeans --clusters 60
+```
 
 Below an example output of a 60-cluster kmeans-derived master grids using quadratic transform.
 ![kmeans-60clusters-quadratic](./assets/kmeans-60clusters-quadratic.png)
@@ -59,6 +58,15 @@ Zooming in on the shallow nodes, we can see that the number of vertical levels i
 Same as above, but using S-transform instead.
 ![kmeans-60clusters-s](./assets/kmeans-60clusters-s.png)
 ![kmeans-zoomed-s](./assets/kmeans-closeup-s.png)
+
+#### auto mode (recommended)
+
+```bash
+cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0.7 --theta-f=10. auto --ngrids=40 --max-levels=49
+```
+
+![auto](./assets/auto.png)
+![auto-zoomed](./assets/auto-zoomed.png)
 
 It's nice to be able to see the master grid plots in real-time, isn't? =)
 
