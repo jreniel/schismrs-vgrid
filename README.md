@@ -46,7 +46,7 @@ cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in 
 #### kmeans mode
 
 ```bash
-cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. kmeans --clusters 60
+cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. kmeans --clusters=60 --max-levels=49
 ```
 
 Below an example output of a 60-cluster kmeans-derived master grids using quadratic transform.
@@ -73,6 +73,10 @@ cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in 
 ![auto-zoomed](./assets/auto-zoomed.png)
 
 It's nice to be able to see the master grid plots in real-time, isn't? =)
+
+### TODO:
+
+Piecewise everything, but that may be an overkill, we'll see.
 
 ### License
 
