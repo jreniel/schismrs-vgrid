@@ -1,6 +1,4 @@
-use crate::transforms::quadratic::QuadraticTransformBuilder;
 use crate::transforms::quadratic::QuadraticTransformBuilderError;
-use crate::transforms::s::STransformBuilder;
 use crate::transforms::s::STransformBuilderError;
 use crate::transforms::traits::{Transform, TransformPlotterError};
 use crate::transforms::transforms::StretchingFunctionError;
@@ -163,7 +161,6 @@ impl<'a> VQSBuilder<'a> {
             .stretching
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("stretching".to_string()))?;
-
         let dz_bottom_min = self
             .dz_bottom_min
             .clone()
@@ -463,14 +460,8 @@ impl<'a> VQSAutoBuilder<'a> {
             VQSAutoBuilderError::UninitializedFieldError("max_levels".to_string())
         })?;
         Self::validate_max_levels(shallow_levels, max_levels)?;
-        let (hsm, nlevels) = Self::build_hsm_and_nlevels(
-            hgrid,
-            ngrids,
-            initial_depth,
-            shallow_levels,
-            max_levels,
-            // stretching,
-        )?;
+        let (hsm, nlevels) =
+            Self::build_hsm_and_nlevels(hgrid, ngrids, initial_depth, shallow_levels, max_levels)?;
         Ok(VQSBuilder::default()
             .hgrid(&hgrid)
             .depths(&hsm)
@@ -523,7 +514,6 @@ impl<'a> VQSAutoBuilder<'a> {
         initial_depth: &'a f64,
         shallow_levels: &usize,
         max_levels: &usize,
-        // stretching: &'a StretchingFunction,
     ) -> Result<(Vec<f64>, Vec<usize>), VQSAutoBuilderError> {
         let max_depth = -hgrid.depths().min()?;
         let x1 = *shallow_levels as f64;
@@ -538,65 +528,10 @@ impl<'a> VQSAutoBuilder<'a> {
         samples[*ngrids - 1] = max_depth;
         let mut hsm = Vec::new();
         let mut levels = Vec::new();
-        // let mut min_dz = NAN;
-        // let mut validated = false;
         for this_depth in samples.iter() {
             let mut level = exp_function(*this_depth).round() as usize;
             if level < *shallow_levels {
                 level = *shallow_levels;
-            } else {
-                // let mut zmas;
-                // let mut min_diff;
-                // while {
-                //     zmas = match stretching {
-                //         StretchingFunction::Quadratic(opts) => {
-                //             if !validated {
-                //                 QuadraticTransformBuilder::validate_etal(opts.etal, &samples[0])?;
-                //                 QuadraticTransformBuilder::validate_a_vqs0(opts.a_vqs0)?;
-                //                 min_dz = samples[0] - opts.etal;
-                //                 validated = true;
-                //             }
-                //             QuadraticTransformBuilder::build_zmas(
-                //                 &vec![*this_depth],
-                //                 &vec![level],
-                //                 opts.etal,
-                //                 opts.a_vqs0,
-                //                 opts.skew_decay_rate,
-                //             )
-                //         }
-                //         StretchingFunction::S(opts) => {
-                //             if !validated {
-                //                 STransformBuilder::validate_etal(opts.etal, &samples[0])?;
-                //                 STransformBuilder::validate_theta_b(opts.theta_b)?;
-                //                 min_dz = samples[0] - opts.etal;
-                //                 validated = true;
-                //             }
-                //             STransformBuilder::build_zmas(
-                //                 &vec![*this_depth],
-                //                 &vec![level],
-                //                 opts.etal,
-                //                 opts.theta_b,
-                //                 opts.theta_f,
-                //             )
-                //         }
-                //     };
-
-                //     min_diff = (zmas[[1, 0]] - zmas[[0, 0]]).abs();
-                //     for i in 0..zmas.len() - 1 {
-                //         let diff = (zmas[[i + 1, 0]] - zmas[[i, 0]]).abs();
-                //         if diff < min_diff {
-                //             min_diff = diff;
-                //         }
-                //     }
-
-                //     min_diff < min_dz
-                // } {
-                //     if level > *shallow_levels {
-                //         level -= 1;
-                //     } else {
-                //         break;
-                //     }
-                // }
             }
             hsm.push(*this_depth);
             levels.push(level);
