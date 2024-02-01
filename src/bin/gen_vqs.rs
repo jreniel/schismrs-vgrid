@@ -82,6 +82,8 @@ struct KmeansCliOpts {
     clusters: usize,
     #[clap(short, long, default_value = "2")]
     shallow_levels: Option<usize>,
+    #[clap(long)]
+    max_levels: usize,
 }
 
 #[derive(Args, Debug)]
@@ -149,6 +151,7 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             if let Some(shallow_levels) = &opts.shallow_levels {
                 builder.shallow_levels(shallow_levels);
             }
+            builder.max_levels(&opts.max_levels);
             builder.build()?
         }
         Modes::Auto(opts) => {

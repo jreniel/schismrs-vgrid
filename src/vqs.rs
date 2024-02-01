@@ -4,9 +4,9 @@ use crate::transforms::traits::{Transform, TransformPlotterError};
 use crate::transforms::transforms::StretchingFunctionError;
 use crate::transforms::StretchingFunction;
 use crate::{kmeans_hsm, KMeansHSMCreateError};
-use ndarray::Array1;
 use ndarray::Array2;
 use ndarray::Axis;
+use ndarray::{Array, Array1};
 use ndarray_stats::errors::MinMaxError;
 use ndarray_stats::QuantileExt;
 use plotly::Plot;
@@ -339,6 +339,7 @@ pub struct VQSKMeansBuilder<'a> {
     etal: Option<&'a f64>,
     shallow_levels: Option<&'a usize>,
     dz_bottom_min: Option<&'a f64>,
+    max_levels: Option<&'a usize>,
 }
 
 impl<'a> VQSKMeansBuilder<'a> {
@@ -359,14 +360,23 @@ impl<'a> VQSKMeansBuilder<'a> {
             VQSKMeansBuilderError::UninitializedFieldError("shallow_levels".to_string())
         })?;
         Self::validate_shallow_levels(shallow_levels)?;
+        let max_levels = self.max_levels.ok_or_else(|| {
+            VQSKMeansBuilderError::UninitializedFieldError("max_levels".to_string())
+        })?;
+        Self::validate_max_levels(shallow_levels, max_levels)?;
         let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
             VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
         })?;
         let mut hsm = kmeans_hsm(hgrid, nclusters, etal)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());
         let mut nlevels = Vec::<usize>::with_capacity(*nclusters);
-        for i in *shallow_levels..(*shallow_levels + *nclusters) {
-            nlevels.push(i);
+        let levels = Array::linspace(*shallow_levels as f64, *max_levels as f64, *nclusters);
+        for level in levels.iter() {
+            let mut level = level.round() as usize;
+            if level < *shallow_levels {
+                level = *shallow_levels;
+            }
+            nlevels.push(level);
         }
         Ok(VQSBuilder::default()
             .hgrid(&hgrid)
@@ -397,6 +407,10 @@ impl<'a> VQSKMeansBuilder<'a> {
         self.shallow_levels = Some(shallow_levels);
         self
     }
+    pub fn max_levels(&mut self, max_levels: &'a usize) -> &mut Self {
+        self.max_levels = Some(max_levels);
+        self
+    }
     pub fn dz_bottom_min(&mut self, dz_bottom_min: &'a f64) -> &mut Self {
         self.dz_bottom_min = Some(dz_bottom_min);
         self
@@ -404,6 +418,18 @@ impl<'a> VQSKMeansBuilder<'a> {
     fn validate_shallow_levels(shallow_levels: &'a usize) -> Result<(), VQSKMeansBuilderError> {
         if *shallow_levels < 2 {
             return Err(VQSKMeansBuilderError::InvalidShallowLevels);
+        }
+        Ok(())
+    }
+    fn validate_max_levels(
+        shallow_levels: &'a usize,
+        max_levels: &'a usize,
+    ) -> Result<(), VQSKMeansBuilderError> {
+        if *shallow_levels > *max_levels {
+            return Err(VQSKMeansBuilderError::InvalidMaxLevels(
+                *shallow_levels,
+                *max_levels,
+            ));
         }
         Ok(())
     }
@@ -419,6 +445,8 @@ pub enum VQSKMeansBuilderError {
     KMeansHSMCreateError(#[from] KMeansHSMCreateError),
     #[error("shallow_levels must be >= 2")]
     InvalidShallowLevels,
+    #[error("max_levels must be > shallow_levels but got max_levels={1}, shallow_levels={0}")]
+    InvalidMaxLevels(usize, usize),
 }
 
 #[derive(Default)]

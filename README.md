@@ -59,6 +59,10 @@ Same as above, but using S-transform instead.
 ![kmeans-60clusters-s](./assets/kmeans-60clusters-s.png)
 ![kmeans-zoomed-s](./assets/kmeans-closeup-s.png)
 
+Notes on kmeans clustering:
+
+To me, the kmeans clustering technique looks very promising. Notice that the first level does not start close to 1, but actually it is closer to 6, which I think is good, because perhaps we don't need that much vertical resolution on the shallow nodes, at least for large-mesh, cross-scale processes. On the other hand, increasing the number of clusters will yield shallower values. Keep in mind that the number of master grids doesn't actually change the number of final grids, since those are a function of the node counts. Master grids are just templates!
+
 #### auto mode (recommended)
 
 ```bash
