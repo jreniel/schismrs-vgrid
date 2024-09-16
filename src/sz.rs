@@ -100,13 +100,11 @@ pub struct SZBuilder<'a> {
 
 impl<'a> SZBuilder<'a> {
     pub fn build(&self) -> Result<SZ, SZBuilderError> {
-        let hgrid = self
-            .hgrid
-            .ok_or_else(|| SZBuilderError::UninitializedFieldError("hgrid".to_string()))?;
         let slevels = self
             .slevels
             .as_ref()
             .ok_or_else(|| SZBuilderError::UninitializedFieldError("slevels".to_string()))?;
+        Self::validate_s_levels(slevels)?;
         let theta_f = self
             .theta_f
             .as_ref()
@@ -126,6 +124,9 @@ impl<'a> SZBuilder<'a> {
             .etal
             .as_ref()
             .ok_or_else(|| SZBuilderError::UninitializedFieldError("etal".to_string()))?;
+        let hgrid = self
+            .hgrid
+            .ok_or_else(|| SZBuilderError::UninitializedFieldError("hgrid".to_string()))?;
         let depths = hgrid.depths();
         let deepest_point = depths.min()?;
         let z_array: Array1<f64> = match &self.zlevels {
@@ -161,6 +162,12 @@ impl<'a> SZBuilder<'a> {
     fn validate_theta_f(theta_f: &f64) -> Result<(), SZBuilderError> {
         if *theta_f <= 0. || *theta_f > 20. {
             return Err(SZBuilderError::InvalidThetaF(*theta_f));
+        };
+        Ok(())
+    }
+    fn validate_s_levels(s_levels: &usize) -> Result<(), SZBuilderError> {
+        if *s_levels < 2 {
+            return Err(SZBuilderError::InvalidSLevels);
         };
         Ok(())
     }
@@ -225,6 +232,8 @@ pub enum SZBuilderError {
     MinMaxError(#[from] ndarray_stats::errors::MinMaxError),
     #[error("zlevels must be all negative and increasing")]
     InvalidZLevels,
+    #[error("slevels must be >= 2")]
+    InvalidSLevels,
     #[error("The first point of zlevels must be smaller or equal to the deepest point in the mesh ({0}) but got {1}")]
     InvalidZLevelsValues(f64, f64),
     #[error("theta_b must be in [0., 1.], but got {0}")]

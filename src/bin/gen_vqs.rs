@@ -78,12 +78,21 @@ enum Modes {
 
 #[derive(Args, Debug)]
 struct KmeansCliOpts {
-    #[clap(short, long)]
+    #[clap(short, long, help = "Number of clusters. Must be an interger >= 1")]
     clusters: usize,
-    #[clap(short, long, default_value = "2")]
+    #[clap(
+        short,
+        long,
+        default_value = "2",
+        help = "Controls the initial number of layers. Must be an integer >= 2."
+    )]
     shallow_levels: Option<usize>,
-    #[clap(long)]
-    max_levels: usize,
+    #[clap(
+        long,
+        help = "Controls the maximum number of layers in the clustering hierarchy. \
+                Defaults to shallow_levels + clusters - 1"
+    )]
+    max_levels: Option<usize>,
 }
 
 #[derive(Args, Debug)]
@@ -96,7 +105,7 @@ struct HsmCliOpts {
 
 #[derive(Args, Debug)]
 struct AutoCliOpts {
-    #[clap(long)]
+    #[clap(long, help = "Number of master grids to generate. Must be an int >= 1")]
     ngrids: usize,
     #[clap(
         long,
@@ -104,10 +113,19 @@ struct AutoCliOpts {
         help = "This is the first depth below etal. This input is positive down."
     )]
     initial_depth: Option<f64>,
-    #[clap(long, default_value = "2")]
+    #[clap(
+        short,
+        long,
+        default_value = "2",
+        help = "Controls the initial number of layers. Must be an integer >= 2."
+    )]
     shallow_levels: Option<usize>,
-    #[clap(long)]
-    max_levels: usize,
+    #[clap(
+        long,
+        help = "Controls the maximum number of layers in the clustering hierarchy. \
+                Defaults to shallow_levels + clusters - 1"
+    )]
+    max_levels: Option<usize>,
 }
 
 fn entrypoint() -> Result<(), Box<dyn Error>> {
@@ -151,7 +169,9 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             if let Some(shallow_levels) = &opts.shallow_levels {
                 builder.shallow_levels(shallow_levels);
             }
-            builder.max_levels(&opts.max_levels);
+            if let Some(max_levels) = &opts.max_levels {
+                builder.max_levels(max_levels);
+            }
             builder.build()?
         }
         Modes::Auto(opts) => {
@@ -162,7 +182,9 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             builder.dz_bottom_min(&cli.dz_bottom_min);
             builder.initial_depth(&opts.initial_depth.as_ref().unwrap());
             builder.shallow_levels(&opts.shallow_levels.as_ref().unwrap());
-            builder.max_levels(&opts.max_levels);
+            if let Some(max_levels) = &opts.max_levels {
+                builder.max_levels(max_levels);
+            }
             builder.build()?
         }
     };

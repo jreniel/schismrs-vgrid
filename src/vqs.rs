@@ -360,17 +360,22 @@ impl<'a> VQSKMeansBuilder<'a> {
             VQSKMeansBuilderError::UninitializedFieldError("shallow_levels".to_string())
         })?;
         Self::validate_shallow_levels(shallow_levels)?;
-        let max_levels = self.max_levels.ok_or_else(|| {
-            VQSKMeansBuilderError::UninitializedFieldError("max_levels".to_string())
-        })?;
-        Self::validate_max_levels(shallow_levels, max_levels)?;
+        // let max_levels = self.max_levels.ok_or_else(|| {
+        //     VQSKMeansBuilderError::UninitializedFieldError("max_levels".to_string())
+        // })?;
+        let max_levels = match self.max_levels {
+            Some(max_levels) => *max_levels,
+            None => Self::calculate_max_levels(shallow_levels, nclusters),
+        };
+        Self::validate_max_levels(shallow_levels, &max_levels)?;
+
         let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
             VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
         })?;
         let mut hsm = kmeans_hsm(hgrid, nclusters, etal)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());
         let mut nlevels = Vec::<usize>::with_capacity(*nclusters);
-        let levels = Array::linspace(*shallow_levels as f64, *max_levels as f64, *nclusters);
+        let levels = Array::linspace(*shallow_levels as f64, max_levels as f64, *nclusters);
         for level in levels.iter() {
             let mut level = level.round() as usize;
             if level < *shallow_levels {
@@ -421,9 +426,13 @@ impl<'a> VQSKMeansBuilder<'a> {
         }
         Ok(())
     }
+
+    fn calculate_max_levels(shallow_levels: &usize, clusters: &usize) -> usize {
+        shallow_levels + clusters - 1
+    }
     fn validate_max_levels(
-        shallow_levels: &'a usize,
-        max_levels: &'a usize,
+        shallow_levels: &usize,
+        max_levels: &usize,
     ) -> Result<(), VQSKMeansBuilderError> {
         if *shallow_levels > *max_levels {
             return Err(VQSKMeansBuilderError::InvalidMaxLevels(
@@ -484,12 +493,17 @@ impl<'a> VQSAutoBuilder<'a> {
             VQSAutoBuilderError::UninitializedFieldError("shallow_levels".to_string())
         })?;
         Self::validate_shallow_levels(shallow_levels)?;
-        let max_levels = self.max_levels.ok_or_else(|| {
-            VQSAutoBuilderError::UninitializedFieldError("max_levels".to_string())
-        })?;
-        Self::validate_max_levels(shallow_levels, max_levels)?;
+        let max_levels = match self.max_levels {
+            Some(max_levels) => *max_levels,
+            None => Self::calculate_max_levels(shallow_levels, ngrids),
+        };
+        Self::validate_max_levels(shallow_levels, &max_levels)?;
+        // let max_levels = self.max_levels.ok_or_else(|| {
+        //     VQSAutoBuilderError::UninitializedFieldError("max_levels".to_string())
+        // })?;
+        // Self::validate_max_levels(shallow_levels, max_levels)?;
         let (hsm, nlevels) =
-            Self::build_hsm_and_nlevels(hgrid, ngrids, initial_depth, shallow_levels, max_levels)?;
+            Self::build_hsm_and_nlevels(hgrid, ngrids, initial_depth, shallow_levels, &max_levels)?;
         Ok(VQSBuilder::default()
             .hgrid(&hgrid)
             .depths(&hsm)
@@ -523,6 +537,10 @@ impl<'a> VQSAutoBuilder<'a> {
             ));
         }
         Ok(())
+    }
+
+    fn calculate_max_levels(shallow_levels: &usize, clusters: &usize) -> usize {
+        shallow_levels + clusters - 1
     }
 
     fn exponential_samples(start: f64, end: f64, steps: usize) -> Vec<f64> {
