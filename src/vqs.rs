@@ -101,40 +101,44 @@ impl<'a> Iterator for IterLevelValues<'a> {
         Some((self.level, values))
     }
 }
-
 impl fmt::Display for VQS {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Write ivcor and nvrt values
         write!(f, "{:>12}\n", self.ivcor())?;
         write!(f, "{:>12}\n", self.nvrt())?;
+
+        // Write number of levels at each node
         write!(
             f,
-            " {}\n",
+            "{}",
             self.bottom_level_indices()
                 .iter()
                 .map(|&index| format!("{:>10}", index))
                 .collect::<Vec<_>>()
                 .join(" ")
         )?;
-        for (level, values) in self.iter_level_values() {
-            let formatted_values: Vec<String> = values
-                .iter()
-                .map(|value| {
-                    if value.is_nan() {
-                        format!("{:15.6}", -9.0)
-                    } else {
-                        format!("{:15.6}", value)
-                    }
-                })
-                .collect();
+        write!(f, "\n")?; // Make sure to end the line
 
-            write!(f, "{:>10}{}\n", level, formatted_values.join(""))
-                .expect("Error writing to output");
+        // Write sigma values level by level
+        for (level, values) in self.iter_level_values() {
+            // Write level number followed by values
+            write!(f, "{:>10}", level)?;
+
+            // Format each value with proper spacing
+            for value in values {
+                if value.is_nan() {
+                    // Use -9.0 for below-bottom points
+                    write!(f, "{:14.6}", -9.0)?;
+                } else {
+                    write!(f, "{:14.6}", value)?;
+                }
+            }
+            write!(f, "\n")?;
         }
 
         Ok(())
     }
 }
-
 #[derive(Default)]
 pub struct VQSBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
@@ -161,11 +165,22 @@ impl<'a> VQSBuilder<'a> {
             .stretching
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("stretching".to_string()))?;
-        let dz_bottom_min = self
-            .dz_bottom_min
-            .clone()
-            .ok_or_else(|| VQSBuilderError::UninitializedFieldError("dz_bottom_min".to_string()))?;
-        Self::validate_dz_bottom_min(dz_bottom_min)?;
+        let dz_bottom_min = match self.dz_bottom_min {
+            Some(value) => value.clone(),
+            None => {
+                // Get the largest negative value from hgrid.depths()
+                let depths_array = hgrid.depths();
+                match depths_array
+                    .iter()
+                    .filter(|&&d| d < 0.0)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                {
+                    Some(&max_negative) => -max_negative,
+                    None => 0.0, // Default if no negative values exist
+                }
+            }
+        };
+        Self::validate_dz_bottom_min(&dz_bottom_min)?;
         let transform = stretching.transform(hgrid, depths, nlevels)?;
         let z_mas = transform.zmas();
         let etal = transform.etal();
@@ -176,7 +191,7 @@ impl<'a> VQSBuilder<'a> {
             nlevels,
             etal,
             transform.a_vqs0(),
-            dz_bottom_min,
+            &dz_bottom_min,
         )?;
         // let depths = hgrid.depths();
         Ok(VQS {
@@ -253,6 +268,11 @@ impl<'a> VQSBuilder<'a> {
                     ));
                 }
                 znd[[kbp[i], i]] = -dp[i];
+                sigma_vqs[[0, i]] = 0.0;
+                sigma_vqs[[kbp[i], i]] = -1.0;
+                for k in 1..kbp[i] {
+                    sigma_vqs[[k, i]] = (znd[[k, i]] - eta2[i]) / (eta2[i] + dp[i]);
+                }
                 for k in 1..kbp[i] {
                     if znd[[k - 1, i]] <= znd[[k, i]] {
                         return Err(VQSBuilderError::InvertedZ(
@@ -369,9 +389,24 @@ impl<'a> VQSKMeansBuilder<'a> {
         };
         Self::validate_max_levels(shallow_levels, &max_levels)?;
 
-        let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
-            VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
-        })?;
+        // let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
+        //     VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
+        // })?;
+        let dz_bottom_min = match self.dz_bottom_min {
+            Some(value) => value.clone(),
+            None => {
+                // Get the largest negative value from hgrid.depths()
+                let depths_array = hgrid.depths();
+                match depths_array
+                    .iter()
+                    .filter(|&&d| d < 0.0)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                {
+                    Some(&max_negative) => -max_negative,
+                    None => 0.0, // Default if no negative values exist
+                }
+            }
+        };
         let mut hsm = kmeans_hsm(hgrid, nclusters, etal)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());
         let mut nlevels = Vec::<usize>::with_capacity(*nclusters);
@@ -481,10 +516,26 @@ impl<'a> VQSAutoBuilder<'a> {
             .ngrids
             .ok_or_else(|| VQSAutoBuilderError::UninitializedFieldError("ngrids".to_string()))?;
         Self::validate_ngrids(ngrids)?;
-        let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
-            VQSAutoBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
-        })?;
-        VQSBuilder::validate_dz_bottom_min(dz_bottom_min)?;
+        // let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
+        //     VQSAutoBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
+        // })?;
+
+        let dz_bottom_min = match self.dz_bottom_min {
+            Some(value) => value.clone(),
+            None => {
+                // Get the largest negative value from hgrid.depths()
+                let depths_array = hgrid.depths();
+                match depths_array
+                    .iter()
+                    .filter(|&&d| d < 0.0)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                {
+                    Some(&max_negative) => -max_negative,
+                    None => 0.0, // Default if no negative values exist
+                }
+            }
+        };
+        VQSBuilder::validate_dz_bottom_min(&dz_bottom_min)?;
         let initial_depth = self.initial_depth.ok_or_else(|| {
             VQSAutoBuilderError::UninitializedFieldError("initial_depth".to_string())
         })?;

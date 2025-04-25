@@ -5,12 +5,6 @@ use schismrs_vgrid::sz::SZBuilder;
 use std::process::ExitCode;
 use std::{error::Error, path::PathBuf};
 
-const VERSION: &'static str = concat! {
-    env! {"CARGO_PKG_VERSION"},
-    "-",
-    env! {"VERGEN_GIT_DESCRIBE"}
-};
-
 fn greater_than_two(s: &str) -> Result<usize, String> {
     let value: usize = s
         .parse()
@@ -28,7 +22,6 @@ fn greater_than_two(s: &str) -> Result<usize, String> {
 
 #[derive(Parser, Debug)]
 #[command(author, about, long_about = None)]
-#[command(version = VERSION)]
 struct Cli {
     hgrid_path: PathBuf,
     #[clap(short, long)]
