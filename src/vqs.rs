@@ -99,7 +99,6 @@ impl<'a> Iterator for IterLevelValues<'a> {
         Some((self.level, values))
     }
 }
-
 impl fmt::Display for VQS {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Write ivcor and nvrt values

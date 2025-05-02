@@ -97,6 +97,34 @@ The plots are generatd using plotly so they are html files. The easy way to see 
 
 then assuming you used port-forwarding you can access the directory on your local browser and hence see the html plot file.
 
+## Compilation issues
+
+Typically, Rust-only projects don't have compilation issues. However this project uses the libproj library, which is a C++ dependency.
+We can overcome this issues using conda to provide the missing deps:
+
+First, create and and activate a new conda environment. The Python version is not relevant, since we're only after conda-forge dependencies.
+
+For example:
+`conda create -n schismrs`
+
+Now activate the environment and install the C/C++ deps
+
+`conda install -c conda-forge compilers clang libclang proj`
+
+Finally, compile the library with:
+
+`PROJ_SYS_STATIC=1 LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH cargo build --release`
+
+The resulting binary is statically compiled, you won't need to activate the conda environment or modify env variables to use it.
+
+#### Looking at the master plots
+
+The plots are generatd using plotly so they are html files. The easy way to see them is to save them as html and then use the built-in Python http server (with port-forwarding) to see them.
+
+`python -m http.server 8081`
+
+then assuming you used port-forwarding you can access the directory on your local browser and hence see the html plot file.
+
 ### TODO:
 
 Piecewise everything, but that may be an overkill, we'll see.
