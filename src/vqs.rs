@@ -11,8 +11,6 @@ use ndarray_stats::errors::MinMaxError;
 use ndarray_stats::QuantileExt;
 use plotly::Plot;
 use schismrs_hgrid::hgrid::Hgrid;
-use std::cmp::min;
-use std::f64::NAN;
 use std::fmt;
 use std::fs::File;
 use std::io::Write;
@@ -104,37 +102,42 @@ impl<'a> Iterator for IterLevelValues<'a> {
 
 impl fmt::Display for VQS {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        // Write ivcor and nvrt values
         write!(f, "{:>12}\n", self.ivcor())?;
         write!(f, "{:>12}\n", self.nvrt())?;
+
+        // Write number of levels at each node
         write!(
             f,
-            " {}\n",
+            "{}",
             self.bottom_level_indices()
                 .iter()
                 .map(|&index| format!("{:>10}", index))
                 .collect::<Vec<_>>()
                 .join(" ")
         )?;
-        for (level, values) in self.iter_level_values() {
-            let formatted_values: Vec<String> = values
-                .iter()
-                .map(|value| {
-                    if value.is_nan() {
-                        format!("{:15.6}", -9.0)
-                    } else {
-                        format!("{:15.6}", value)
-                    }
-                })
-                .collect();
+        write!(f, "\n")?; // Make sure to end the line
 
-            write!(f, "{:>10}{}\n", level, formatted_values.join(""))
-                .expect("Error writing to output");
+        // Write sigma values level by level
+        for (level, values) in self.iter_level_values() {
+            // Write level number followed by values
+            write!(f, "{:>10}", level)?;
+
+            // Format each value with proper spacing
+            for value in values {
+                if value.is_nan() {
+                    // Use -9.0 for below-bottom points
+                    write!(f, "{:14.6}", -9.0)?;
+                } else {
+                    write!(f, "{:14.6}", value)?;
+                }
+            }
+            write!(f, "\n")?;
         }
 
         Ok(())
     }
 }
-
 #[derive(Default)]
 pub struct VQSBuilder<'a> {
     hgrid: Option<&'a Hgrid>,
@@ -161,11 +164,31 @@ impl<'a> VQSBuilder<'a> {
             .stretching
             .clone()
             .ok_or_else(|| VQSBuilderError::UninitializedFieldError("stretching".to_string()))?;
-        let dz_bottom_min = self
-            .dz_bottom_min
-            .clone()
-            .ok_or_else(|| VQSBuilderError::UninitializedFieldError("dz_bottom_min".to_string()))?;
-        Self::validate_dz_bottom_min(dz_bottom_min)?;
+        // let dz_bottom_min = match self.dz_bottom_min {
+        //     Some(value) => value.clone(),
+        //     None => {
+        //         // Get the largest negative value from hgrid.depths()
+        //         let depths_array = hgrid.depths();
+        //         match depths_array
+        //             .iter()
+        //             .filter(|&&d| d < 0.0)
+        //             .max_by(|a, b| a.partial_cmp(b).unwrap())
+        //         {
+        //             Some(&max_negative) => -max_negative,
+        //             None => 0.0, // Default if no negative values exist
+        //         }
+        //     }
+        // };
+        let min_bottom_layer_thickness = match self.dz_bottom_min {
+            Some(value) => *value,
+            None => {
+                // Use a fraction of the average layer thickness in the shallowest region
+                let shallow_depth = depths[0];
+                let shallow_levels = nlevels[0];
+                shallow_depth / (shallow_levels as f64) * 0.5 // Half the average layer thickness
+            }
+        };
+        Self::validate_dz_bottom_min(&min_bottom_layer_thickness)?;
         let transform = stretching.transform(hgrid, depths, nlevels)?;
         let z_mas = transform.zmas();
         let etal = transform.etal();
@@ -176,7 +199,7 @@ impl<'a> VQSBuilder<'a> {
             nlevels,
             etal,
             transform.a_vqs0(),
-            dz_bottom_min,
+            &min_bottom_layer_thickness,
         )?;
         // let depths = hgrid.depths();
         Ok(VQS {
@@ -192,94 +215,175 @@ impl<'a> VQSBuilder<'a> {
     fn build_sigma_vqs(
         z_mas: &Array2<f64>,
         hgrid: &Hgrid,
-        hsm: &Vec<f64>,
-        nv_vqs: &Vec<usize>,
+        master_depths: &[f64],
+        master_levels: &[usize],
         etal: &f64,
         a_vqs0: &f64,
-        dz_bottom_min: &f64,
+        min_bottom_layer_thickness: &f64,
     ) -> Result<(Array2<f64>, Array2<f64>), VQSBuilderError> {
-        let nvrt = z_mas.nrows();
-        let dp = -hgrid.depths();
-        let np = dp.len();
-        let mut sigma_vqs = Array2::from_elem((nvrt, np), NAN);
-        let mut kbp = Array1::zeros(np);
-        let eta2 = Array1::from_elem(np, etal);
-        let mut znd = Array2::from_elem((nvrt, np), NAN);
-        let uninitialized_m0_value = hsm.len() + 1;
-        let mut m0 = Array1::from_elem(np, uninitialized_m0_value);
-        for i in 0..np {
-            if dp[i] <= hsm[0] {
-                kbp[i] = nv_vqs[0];
-                for k in 0..nv_vqs[0] {
-                    let sigma = (k as f64) / (1.0 - nv_vqs[0] as f64);
-                    sigma_vqs[[k, i]] = a_vqs0 * sigma * sigma + (1.0 + a_vqs0) * sigma;
-                    znd[[k, i]] = sigma_vqs[[k, i]] * (eta2[i] + dp[i]) + eta2[i];
-                }
+        let bathymetry = hgrid.depths();
+        let node_count = bathymetry.len();
+
+        // Convert to positive depths for calculations
+        let depths: Vec<f64> = bathymetry.iter().map(|&d| -d).collect();
+
+        // Maximum number of vertical levels
+        let max_levels = *master_levels.iter().max().unwrap_or(&0);
+
+        // Initialize arrays with NaN values
+        let mut sigma = Array2::<f64>::from_elem((max_levels, node_count), f64::NAN);
+        let mut z_coords = Array2::<f64>::from_elem((max_levels, node_count), f64::NAN);
+
+        // Elevation at each node
+        let elevations = Array1::from_elem(node_count, *etal);
+        // Process each node
+        for (node_idx, &depth) in depths.iter().enumerate() {
+            if depth <= master_depths[0] {
+                // Handle shallow areas
+                Self::process_shallow_node(
+                    node_idx,
+                    depth,
+                    master_levels[0],
+                    a_vqs0,
+                    elevations[node_idx],
+                    &mut sigma,
+                    &mut z_coords,
+                );
             } else {
-                m0[i] = 0;
-                let mut zrat = 0.;
-                for m in 1..hsm.len() {
-                    if dp[i] > hsm[m - 1] && dp[i] <= hsm[m] {
-                        m0[i] = m;
-                        zrat = (dp[i] - hsm[m - 1]) / (hsm[m] - hsm[m - 1]);
-                        break;
-                    }
-                }
-                if m0[i] == 0 {
-                    return Err(VQSBuilderError::FailedToFindAMasterVgrid(i + 1, dp[i]));
-                }
-
-                // interpolate vertical levels
-                kbp[i] = 0;
-                let mut z3 = NAN;
-                for k in 0..nv_vqs[m0[i]] {
-                    let z1 = z_mas[[min(k, nv_vqs[m0[i] - 1]), m0[i] - 1]];
-                    let z2 = z_mas[[k, m0[i]]];
-                    z3 = z1 + (z2 - z1) * zrat;
-
-                    if z3 >= -dp[i] + dz_bottom_min {
-                        znd[[k, i]] = z3;
-                    } else {
-                        kbp[i] = k;
-                        break;
-                    }
-                }
-                if kbp[i] == 0 {
-                    return Err(VQSBuilderError::FailedToFindABottom(
-                        i + 1,
-                        dp[i],
-                        z3,
-                        z_mas.index_axis(Axis(1), m0[i]).to_owned(),
-                    ));
-                }
-                znd[[kbp[i], i]] = -dp[i];
-                for k in 1..kbp[i] {
-                    if znd[[k - 1, i]] <= znd[[k, i]] {
-                        return Err(VQSBuilderError::InvertedZ(
-                            i + 1,
-                            dp[i],
-                            m0[i],
-                            k,
-                            znd[[k - 1, i]],
-                            znd[[k, i]],
-                        ));
-                    }
-                }
+                // Handle deeper areas
+                Self::process_deep_node(
+                    node_idx,
+                    depth,
+                    master_depths,
+                    master_levels,
+                    z_mas,
+                    elevations[node_idx],
+                    min_bottom_layer_thickness,
+                    &mut sigma,
+                    &mut z_coords,
+                )?;
             }
         }
-        // let mut file = File::create("znd.out").expect("Unable to create file");
-        // for j in 0..znd.ncols() {
-        //     let line = (0..znd.nrows())
-        //         .map(|i| format!("{:16.6}", znd[[i, j]])) // Format each number with 16 decimal places and align
-        //         .collect::<Vec<_>>()
-        //         .join(" ");
-        //     writeln!(file, "{:10} {:16.6} {}", j + 1, dp[j], line)
-        //         .expect("Unable to write to file");
-        // }
-        // file.flush().expect("Unable to flush file");
-        // unimplemented!("wrote znd.out");
-        sigma_vqs.invert_axis(Axis(0));
-        Ok((sigma_vqs, znd))
+
+        // Flip arrays to match expected orientation (bottom to surface)
+        sigma.invert_axis(Axis(0));
+
+        Ok((sigma, z_coords))
+    }
+    /// Process a node in a shallow area (depth <= first master depth)
+    fn process_shallow_node(
+        node_idx: usize,
+        depth: f64,
+        levels: usize,
+        a_vqs0: &f64,
+        elevation: f64,
+        sigma: &mut Array2<f64>,
+        z_coords: &mut Array2<f64>,
+    ) {
+        for k in 0..levels {
+            // Calculate sigma using quadratic transformation
+            // Note: Fortran uses 1-based indexing, so adjust formula
+            let s = (k as f64 - 1.0) / (1.0 - levels as f64);
+            let transformed_sigma = a_vqs0 * s * s + (1.0 + a_vqs0) * s;
+
+            // Store sigma value
+            sigma[[k, node_idx]] = transformed_sigma;
+
+            // Calculate and store z-coordinate
+            z_coords[[k, node_idx]] = transformed_sigma * (elevation + depth) + elevation;
+        }
+    }
+
+    /// Process a node in a deeper area (depth > first master depth)
+    fn process_deep_node(
+        node_idx: usize,
+        depth: f64,
+        master_depths: &[f64],
+        master_levels: &[usize],
+        z_mas: &Array2<f64>,
+        elevation: f64,
+        min_bottom_layer_thickness: &f64,
+        sigma: &mut Array2<f64>,
+        z_coords: &mut Array2<f64>,
+    ) -> Result<(), VQSBuilderError> {
+        // Find the appropriate master grid
+        let grid_idx = Self::find_master_grid(depth, master_depths)?;
+
+        // Calculate interpolation factor
+        let zrat = (depth - master_depths[grid_idx - 1])
+            / (master_depths[grid_idx] - master_depths[grid_idx - 1]);
+
+        // Find bottom level and interpolate z-coordinates
+        let mut bottom_level_found = false;
+        let mut bottom_level = 0;
+
+        for k in 0..master_levels[grid_idx] {
+            // Interpolate between master grids
+            let z1 = z_mas[[
+                std::cmp::min(k, master_levels[grid_idx - 1] - 1),
+                grid_idx - 1,
+            ]];
+            let z2 = z_mas[[k, grid_idx]];
+            let z3 = z1 + (z2 - z1) * zrat;
+
+            if z3 >= -depth + min_bottom_layer_thickness {
+                // Store z-coordinate
+                z_coords[[k, node_idx]] = z3;
+            } else {
+                // We've reached the bottom
+                bottom_level = k;
+                bottom_level_found = true;
+                break;
+            }
+        }
+
+        if !bottom_level_found {
+            return Err(VQSBuilderError::FailedToFindABottom(
+                node_idx + 1,
+                depth,
+                z_coords[[bottom_level, node_idx]],
+                z_mas.row(0).to_owned(),
+            ));
+        }
+
+        // Set bottom z-coordinate to exactly match bathymetry
+        z_coords[[bottom_level, node_idx]] = -depth;
+
+        // Calculate sigma values
+        sigma[[0, node_idx]] = 0.0; // Surface
+        sigma[[bottom_level, node_idx]] = -1.0; // Bottom
+
+        // Calculate intermediate sigma values
+        for k in 1..bottom_level {
+            sigma[[k, node_idx]] = (z_coords[[k, node_idx]] - elevation) / (elevation + depth);
+        }
+
+        // Check for inversions
+        for k in 1..=bottom_level {
+            if z_coords[[k - 1, node_idx]] <= z_coords[[k, node_idx]] {
+                return Err(VQSBuilderError::InvertedZ(
+                    node_idx + 1,
+                    depth,
+                    grid_idx,
+                    k,
+                    z_coords[[k - 1, node_idx]],
+                    z_coords[[k, node_idx]],
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    /// Find which master grid to use for a given depth
+    fn find_master_grid(depth: f64, master_depths: &[f64]) -> Result<usize, VQSBuilderError> {
+        for i in 1..master_depths.len() {
+            if depth > master_depths[i - 1] && depth <= master_depths[i] {
+                return Ok(i);
+            }
+        }
+
+        Err(VQSBuilderError::FailedToFindAMasterVgrid(0, depth))
     }
 
     pub fn hgrid(&mut self, hgrid: &'a Hgrid) -> &mut Self {
@@ -319,7 +423,7 @@ pub enum VQSBuilderError {
     QuadraticTransformBuilderError(#[from] QuadraticTransformBuilderError),
     #[error(transparent)]
     STransformBuilderError(#[from] STransformBuilderError),
-    #[error("dz_bottom_min must be >= 0")]
+    #[error("dz_bottom_min must be > 0")]
     InvalidDzBottomMin,
     #[error("Failed to find a master vgrid for node id: {0} and depth {1}")]
     FailedToFindAMasterVgrid(usize, f64),
@@ -369,9 +473,24 @@ impl<'a> VQSKMeansBuilder<'a> {
         };
         Self::validate_max_levels(shallow_levels, &max_levels)?;
 
-        let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
-            VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
-        })?;
+        // let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
+        //     VQSKMeansBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
+        // })?;
+        let dz_bottom_min = match self.dz_bottom_min {
+            Some(value) => value.clone(),
+            None => {
+                // Get the largest negative value from hgrid.depths()
+                let depths_array = hgrid.depths();
+                match depths_array
+                    .iter()
+                    .filter(|&&d| d < 0.0)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                {
+                    Some(&max_negative) => -max_negative,
+                    None => 0.0, // Default if no negative values exist
+                }
+            }
+        };
         let mut hsm = kmeans_hsm(hgrid, nclusters, etal)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());
         let mut nlevels = Vec::<usize>::with_capacity(*nclusters);
@@ -481,10 +600,26 @@ impl<'a> VQSAutoBuilder<'a> {
             .ngrids
             .ok_or_else(|| VQSAutoBuilderError::UninitializedFieldError("ngrids".to_string()))?;
         Self::validate_ngrids(ngrids)?;
-        let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
-            VQSAutoBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
-        })?;
-        VQSBuilder::validate_dz_bottom_min(dz_bottom_min)?;
+        // let dz_bottom_min = self.dz_bottom_min.ok_or_else(|| {
+        //     VQSAutoBuilderError::UninitializedFieldError("dz_bottom_min".to_string())
+        // })?;
+
+        let dz_bottom_min = match self.dz_bottom_min {
+            Some(value) => value.clone(),
+            None => {
+                // Get the largest negative value from hgrid.depths()
+                let depths_array = hgrid.depths();
+                match depths_array
+                    .iter()
+                    .filter(|&&d| d < 0.0)
+                    .max_by(|a, b| a.partial_cmp(b).unwrap())
+                {
+                    Some(&max_negative) => -max_negative,
+                    None => 0.0, // Default if no negative values exist
+                }
+            }
+        };
+        VQSBuilder::validate_dz_bottom_min(&dz_bottom_min)?;
         let initial_depth = self.initial_depth.ok_or_else(|| {
             VQSAutoBuilderError::UninitializedFieldError("initial_depth".to_string())
         })?;
