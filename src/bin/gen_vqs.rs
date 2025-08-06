@@ -9,7 +9,8 @@ use std::process::ExitCode;
 use std::{error::Error, path::PathBuf};
 
 #[derive(Parser, Debug)]
-#[command(author, about, long_about = None)]
+#[command(author, about, long_about = None, version = env!("SCHISMRS_VGRID_VERSION"))]
+
 struct Cli {
     hgrid_path: PathBuf,
     #[clap(short, long)]
