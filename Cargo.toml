@@ -18,4 +18,5 @@ rayon = "1.8.0"
 humantime = "2.1.0"
 libm = "0.2.8"
 plotly = { version = "0.8.4", features = ["ndarray"] }
+csv = "1.3.1"
 

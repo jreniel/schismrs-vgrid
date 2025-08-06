@@ -1,4 +1,4 @@
-// schishmrs-vgrid/src/vqs/errors.rs
+// schismrs-vgrid/src/vqs/errors.rs
 
 use crate::transforms::quadratic::QuadraticTransformBuilderError;
 use crate::transforms::s::STransformBuilderError;
@@ -62,4 +62,37 @@ pub enum VQSAutoBuilderError {
     STransformBuilderError(#[from] STransformBuilderError),
     #[error(transparent)]
     QuadraticTransformBuilderError(#[from] QuadraticTransformBuilderError),
+}
+
+// New error types for reconstruction and loading
+#[derive(Error, Debug)]
+pub enum ReconstructionError {
+    #[error("Insufficient data: only {0} wet nodes found (minimum: 10)")]
+    InsufficientData(usize),
+    #[error("Clustering failed: {0}")]
+    ClusteringFailed(String),
+    #[error("No valid master grids could be extracted")]
+    NoValidMasterGrids,
+    #[error("Depth-level relationship is not monotonic")]
+    NonMonotonicRelationship,
+    #[error("IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("CSV error: {0}")]
+    CsvError(#[from] csv::Error),
+}
+
+#[derive(Error, Debug)]
+pub enum VQSLoadError {
+    #[error("File IO error: {0}")]
+    IoError(#[from] std::io::Error),
+    #[error("Invalid vgrid.in format: {0}")]
+    InvalidFormat(String),
+    #[error("Unsupported ivcor value: {0} (only ivcor=1 is supported)")]
+    UnsupportedIvcor(i32),
+    #[error("Inconsistent dimensions: nvrt={0}, but found {1} levels")]
+    InconsistentDimensions(usize, usize),
+    #[error("Parse error: {0}")]
+    ParseError(String),
+    #[error("Node count mismatch: hgrid has {0} nodes but vgrid has {1}")]
+    NodeCountMismatch(usize, usize),
 }
