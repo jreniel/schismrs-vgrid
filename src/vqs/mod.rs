@@ -1,4 +1,4 @@
-// schishmrs-vgrid/src/vqs/mod.rs
+// schismrs-vgrid/src/vqs/mod.rs
 
 mod vqs;
 mod vqs_builder;
