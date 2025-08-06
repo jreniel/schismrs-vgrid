@@ -156,6 +156,7 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             if cli.dz_bottom_min.is_some() {
                 builder.dz_bottom_min(cli.dz_bottom_min.as_ref().unwrap());
             }
+            builder.stretching(&transform);
             builder.build()?
         }
         Modes::Kmeans(opts) => {
