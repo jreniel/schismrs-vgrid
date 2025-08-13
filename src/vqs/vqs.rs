@@ -76,8 +76,19 @@ impl VQS {
     
     pub fn bottom_level_indices(&self) -> Vec<usize> {
         debug!("Computing bottom level indices from kbp");
-        // Return nvrt + 1 - kbp for each node (SCHISM convention)
-        self.kbp.iter().map(|&kbp| self.nvrt() + 1 - kbp).collect()
+        
+        // FIXED: Now that all nodes (including dry) have kbp >= 2,
+        // we can use the simple conversion formula
+        // SCHISM convention: nvrt + 1 - kbp gives the bottom level index
+        self.kbp.iter().map(|&kbp| {
+            if kbp == 0 {
+                // This should not happen anymore, but just in case
+                warn!("Found node with kbp=0, converting to 2-level node");
+                self.nvrt() - 1  // 2 levels
+            } else {
+                self.nvrt() + 1 - kbp
+            }
+        }).collect()
     }
 
     fn iter_level_values(&self) -> IterLevelValues {

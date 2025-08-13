@@ -140,13 +140,31 @@ impl<'a> VQSBuilder<'a> {
         
         let mut shallow_count = 0;
         let mut deep_count = 0;
+        let mut dry_count = 0;
         let mut error_count = 0;
         
         // Process each node
         for (node_idx, &depth) in depths.iter().enumerate() {
             if node_idx % 10000 == 0 && node_idx > 0 {
-                debug!("Processed {} nodes ({} shallow, {} deep)", 
-                      node_idx, shallow_count, deep_count);
+                debug!("Processed {} nodes ({} dry, {} shallow, {} deep)", 
+                      node_idx, dry_count, shallow_count, deep_count);
+            }
+            
+            // FIXED: Handle dry nodes with 2 levels for SCHISM compatibility
+            if depth <= 0.0 {
+                dry_count += 1;
+                // Give dry nodes 2 levels to avoid TRIDAG failure
+                kbp[node_idx] = 2;
+                
+                // Set simple 2-level sigma values for dry nodes
+                sigma[[0, node_idx]] = 0.0;   // Surface
+                sigma[[1, node_idx]] = -1.0;  // Bottom
+                
+                // Set z-coordinates (though they won't be used for dry nodes)
+                z_coords[[0, node_idx]] = elevations[node_idx];
+                z_coords[[1, node_idx]] = elevations[node_idx] - 0.1; // Small nominal depth
+                
+                continue;
             }
             
             if depth <= master_depths[0] {
@@ -189,8 +207,8 @@ impl<'a> VQSBuilder<'a> {
             }
         }
         
-        info!("Node processing complete: {} shallow, {} deep", 
-              shallow_count, deep_count);
+        info!("Node processing complete: {} dry, {} shallow, {} deep", 
+              dry_count, shallow_count, deep_count);
 
         // Convert to SCHISM output format where level 1 is bottom, level nvrt is surface
         let mut output_sigma = Array2::<f64>::from_elem((max_levels, node_count), -9.0);
@@ -224,19 +242,29 @@ impl<'a> VQSBuilder<'a> {
     ) {
         trace!("Processing shallow node {} with depth {}", node_idx, depth);
         
-        kbp[node_idx] = levels;
+        // Ensure minimum 2 levels for TRIDAG compatibility
+        let actual_levels = if levels < 2 { 2 } else { levels };
+        kbp[node_idx] = actual_levels;
         
-        for k in 0..levels {
-            // Calculate sigma using quadratic transformation
-            // Note: k=0 is surface, k=levels-1 is bottom
-            let s = (k as f64) / (1.0 - levels as f64);
-            let transformed_sigma = a_vqs0 * s * s + (1.0 + a_vqs0) * s;
+        if actual_levels == 2 {
+            // Simple 2-level distribution
+            sigma[[0, node_idx]] = 0.0;   // Surface
+            sigma[[1, node_idx]] = -1.0;  // Bottom
+            z_coords[[0, node_idx]] = elevation;
+            z_coords[[1, node_idx]] = -depth;
+        } else {
+            for k in 0..actual_levels {
+                // Calculate sigma using quadratic transformation
+                // Note: k=0 is surface, k=levels-1 is bottom
+                let s = (k as f64) / (1.0 - actual_levels as f64);
+                let transformed_sigma = a_vqs0 * s * s + (1.0 + a_vqs0) * s;
 
-            // Store sigma value
-            sigma[[k, node_idx]] = transformed_sigma;
+                // Store sigma value
+                sigma[[k, node_idx]] = transformed_sigma;
 
-            // Calculate and store z-coordinate
-            z_coords[[k, node_idx]] = transformed_sigma * (elevation + depth) + elevation;
+                // Calculate and store z-coordinate
+                z_coords[[k, node_idx]] = transformed_sigma * (elevation + depth) + elevation;
+            }
         }
     }
 
@@ -292,6 +320,13 @@ impl<'a> VQSBuilder<'a> {
                 -depth,
                 Array1::zeros(1),
             ));
+        }
+        
+        // Ensure minimum 2 levels for TRIDAG compatibility
+        if bottom_level == 1 {
+            bottom_level = 2;
+            z_coords[[0, node_idx]] = elevation;
+            z_coords[[1, node_idx]] = -depth;
         }
 
         kbp[node_idx] = bottom_level;
