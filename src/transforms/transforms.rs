@@ -1,6 +1,9 @@
+// schismrs-vgrid/src/transforms/transforms.rs
+
 use super::quadratic::QuadraticTransformBuilder;
 use super::quadratic::QuadraticTransformBuilderError;
 use super::quadratic::QuadraticTransformOpts;
+use super::reconstructed::ReconstructedTransform;
 use super::s::STransformBuilder;
 use super::s::STransformBuilderError;
 use super::s::STransformOpts;
@@ -13,6 +16,16 @@ use thiserror::Error;
 pub enum StretchingFunction<'a> {
     Quadratic(QuadraticTransformOpts<'a>),
     S(STransformOpts<'a>),
+    Reconstructed(ReconstructedOpts),
+}
+
+/// Options for a reconstructed transform from a loaded VQS file
+#[derive(Clone, Debug)]
+pub struct ReconstructedOpts {
+    pub master_depths: Vec<f64>,
+    pub master_levels: Vec<usize>,
+    pub etal: f64,
+    pub a_vqs0: f64,
 }
 
 impl<'a> StretchingFunction<'a> {
@@ -20,8 +33,10 @@ impl<'a> StretchingFunction<'a> {
         match self {
             StretchingFunction::Quadratic(opts) => opts.etal,
             StretchingFunction::S(opts) => opts.etal,
+            StretchingFunction::Reconstructed(opts) => &opts.etal,
         }
     }
+    
     pub fn transform(
         &self,
         hgrid: &Hgrid,
@@ -49,6 +64,14 @@ impl<'a> StretchingFunction<'a> {
                     .theta_f(opts.theta_f)
                     .theta_b(opts.theta_b)
                     .build()?,
+            )),
+            StretchingFunction::Reconstructed(opts) => Ok(Rc::new(
+                ReconstructedTransform::new(
+                    opts.master_depths.clone(),
+                    opts.master_levels.clone(),
+                    opts.etal,
+                    opts.a_vqs0,
+                )
             )),
         }
     }
