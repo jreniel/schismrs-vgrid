@@ -26,6 +26,8 @@ pub enum VQSBuilderError {
     InvertedZ(usize, f64, usize, usize, f64, f64),
     #[error(transparent)]
     StretchingFunctionError(#[from] StretchingFunctionError),
+    #[error("{0}")]
+    InvalidBottomIndices(String),
 }
 
 #[derive(Error, Debug)]
