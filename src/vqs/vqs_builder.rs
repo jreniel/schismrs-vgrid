@@ -32,11 +32,10 @@ impl<'a> VQSBuilder<'a> {
 
         info!("Hgrid loaded:");
         info!("  - Total nodes: {}", hgrid.nodes().len());
-        info!("  - Total elements: {}", hgrid.elements().len());
+        info!("  - Total elements: {}", hgrid.elements().hash_map().len());
 
         // Analyze depth distribution
         let node_depths = hgrid.depths();
-        let mut depth_stats = vec![];
         let mut dry_nodes = 0;
         let mut wet_nodes = 0;
         let mut max_depth = 0.0f64;
