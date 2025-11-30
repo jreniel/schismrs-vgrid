@@ -656,7 +656,7 @@ impl VQS {
             .collect()
     }
 
-    fn iter_level_values(&self) -> IterLevelValues {
+    fn iter_level_values(&self) -> IterLevelValues<'_> {
         trace!("Creating level values iterator");
         IterLevelValues {
             vqs: self,
