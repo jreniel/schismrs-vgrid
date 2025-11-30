@@ -280,7 +280,7 @@ impl<'a> VQSBuilder<'a> {
 
         let mut shallow_count = 0;
         let mut deep_count = 0;
-        let mut dry_count = 0;
+        let _dry_count = 0;
         let mut error_count = 0;
         let mut problem_nodes = Vec::new();
 

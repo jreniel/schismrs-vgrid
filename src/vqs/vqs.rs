@@ -473,7 +473,7 @@ impl VQS {
         depths: &[f64],
         levels: &[usize],
         target_count: usize,
-        all_pairs: &[(f64, usize)],
+        _all_pairs: &[(f64, usize)],
     ) -> (Vec<f64>, Vec<usize>) {
         // Use K-means-like approach to find optimal master grids
         let mut simplified_depths = vec![];
@@ -507,7 +507,7 @@ impl VQS {
         master_depths: &[f64],
         master_levels: &[usize],
         depth_level_pairs: &[(f64, usize)],
-        hgrid: &Hgrid,
+        _hgrid: &Hgrid,
     ) -> Result<f64, ReconstructionError> {
         info!("Validating extracted master grids");
 
@@ -677,7 +677,7 @@ impl VQS {
     /// Quick extraction of master grids for file loading
     /// This is a simplified version used during file loading
     fn quick_extract_master_grids(
-        sigma_vqs: &Array2<f64>,
+        _sigma_vqs: &Array2<f64>,
         kbp: &[usize],
         hgrid: &Hgrid,
     ) -> Result<(Vec<f64>, Vec<usize>), String> {
