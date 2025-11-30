@@ -5,9 +5,8 @@ use super::vqs::VQS;
 use crate::transforms::StretchingFunction;
 use log::{debug, error, info, trace, warn};
 use ndarray::Array2;
-use ndarray::{Array, Array1};
+use ndarray::Array1;
 use schismrs_hgrid::hgrid::Hgrid;
-use std::rc::Rc;
 use std::time::Instant;
 
 #[derive(Default)]

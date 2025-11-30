@@ -4,7 +4,7 @@ use super::errors::VQSKMeansBuilderError;
 use super::vqs::VQS;
 use super::vqs_builder::VQSBuilder;
 use crate::transforms::StretchingFunction;
-use crate::{kmeans_hsm, KMeansHSMCreateError};
+use crate::kmeans_hsm;
 use ndarray::Array;
 use schismrs_hgrid::hgrid::Hgrid;
 

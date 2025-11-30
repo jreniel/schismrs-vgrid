@@ -4,7 +4,7 @@ use super::errors::{ReconstructionError, VQSLoadError};
 use crate::transforms::traits::{Transform, TransformPlotterError};
 use crate::transforms::StretchingFunction;
 use log::{debug, info, trace, warn};
-use ndarray::{Array1, Array2, Axis};
+use ndarray::Array2;
 use plotly::Plot;
 use schismrs_hgrid::hgrid::Hgrid;
 use std::collections::HashMap;
