@@ -34,7 +34,8 @@ impl<'a> VQSBuilder<'a> {
         info!("  - Total elements: {}", hgrid.elements().hash_map().len());
 
         // Analyze depth distribution
-        let node_depths = hgrid.depths();
+        // Use positive-up convention (negative values = underwater) for backward compatibility
+        let node_depths = hgrid.depths_positive_up();
         let mut dry_nodes = 0;
         let mut wet_nodes = 0;
         let mut max_depth = 0.0f64;
@@ -239,7 +240,8 @@ impl<'a> VQSBuilder<'a> {
         info!("Starting build_sigma_vqs");
         info!("========================================");
 
-        let bathymetry = hgrid.depths();
+        // Use depths_positive_down() directly - values are already positive for underwater nodes
+        let bathymetry = hgrid.depths_positive_down();
         let node_count = bathymetry.len();
 
         info!("Input parameters:");
@@ -253,8 +255,8 @@ impl<'a> VQSBuilder<'a> {
             min_bottom_layer_thickness
         );
 
-        // Convert to positive depths for calculations
-        let depths: Vec<f64> = bathymetry.iter().map(|&d| -d).collect();
+        // depths_positive_down() already gives positive values for underwater nodes
+        let depths: Vec<f64> = bathymetry.iter().cloned().collect();
 
         // Maximum number of vertical levels
         let max_levels = *master_levels.iter().max().unwrap_or(&0);

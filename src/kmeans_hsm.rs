@@ -19,7 +19,8 @@ pub fn kmeans_hsm(
         nclusters
     );
     let now = Instant::now();
-    let mut depths: Vec<f64> = hgrid.depths().into_iter().collect();
+    // Use positive-up convention (negative values = underwater) for backward compatibility
+    let mut depths: Vec<f64> = hgrid.depths_positive_up().into_iter().collect();
     depths.sort_by(|a, b| a.partial_cmp(b).unwrap());
     depths.dedup();
     // keep only the underwater numbers.

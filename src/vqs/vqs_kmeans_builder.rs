@@ -45,19 +45,8 @@ impl<'a> VQSKMeansBuilder<'a> {
         Self::validate_max_levels(shallow_levels, &max_levels)?;
 
         let dz_bottom_min = match self.dz_bottom_min {
-            Some(value) => value.clone(),
-            None => {
-                // Get the largest negative value from hgrid.depths()
-                let depths_array = hgrid.depths();
-                match depths_array
-                    .iter()
-                    .filter(|&&d| d < 0.0)
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                {
-                    Some(&max_negative) => -max_negative,
-                    None => 0.0, // Default if no negative values exist
-                }
-            }
+            Some(value) => *value,
+            None => 0.3, // Default minimum bottom layer thickness in meters
         };
         let mut hsm = kmeans_hsm(hgrid, nclusters, etal)?;
         hsm.iter_mut().for_each(|depth| *depth = depth.abs());

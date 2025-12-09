@@ -160,13 +160,13 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
 }
 
 fn prepare_extraction_results(
-    vqs: &VQS, 
-    hgrid: &Hgrid, 
-    master_depths: Vec<f64>, 
+    vqs: &VQS,
+    hgrid: &Hgrid,
+    master_depths: Vec<f64>,
     master_levels: Vec<usize>
 ) -> Result<ExtractionResults, Box<dyn Error>> {
-    let bathymetry = hgrid.depths();
-    let depths: Vec<f64> = bathymetry.iter().map(|&d| -d).collect();
+    // Use positive-down convention directly (positive values = underwater)
+    let depths: Vec<f64> = hgrid.depths_positive_down().to_vec();
     
     let mut wet_nodes = 0;
     let mut dry_nodes = 0;
@@ -202,7 +202,7 @@ fn prepare_extraction_results(
     Ok(ExtractionResults {
         master_depths,
         master_levels,
-        total_nodes: bathymetry.len(),
+        total_nodes: depths.len(),
         wet_nodes,
         dry_nodes,
         max_depth,
@@ -241,8 +241,8 @@ fn print_analysis_summary(results: &ExtractionResults) {
 }
 
 fn generate_analysis_stats(vqs: &VQS, hgrid: &Hgrid) -> Result<AnalysisStats, Box<dyn Error>> {
-    let bathymetry = hgrid.depths();
-    let depths: Vec<f64> = bathymetry.iter().map(|&d| -d).collect();
+    // Use positive-down convention directly (positive values = underwater)
+    let depths: Vec<f64> = hgrid.depths_positive_down().to_vec();
     
     let mut depth_level_pairs = Vec::new();
     let mut depth_bins = std::collections::HashMap::new();

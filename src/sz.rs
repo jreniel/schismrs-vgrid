@@ -127,7 +127,8 @@ impl<'a> SZBuilder<'a> {
         let hgrid = self
             .hgrid
             .ok_or_else(|| SZBuilderError::UninitializedFieldError("hgrid".to_string()))?;
-        let depths = hgrid.depths();
+        // Use positive-up convention (negative values = underwater) for backward compatibility
+        let depths = hgrid.depths_positive_up();
         let deepest_point = depths.min()?;
         let below_deepest_point = *deepest_point - f32::EPSILON as f64;
         let z_array: Array1<f64> = match &self.zlevels {

@@ -32,19 +32,8 @@ impl<'a> VQSAutoBuilder<'a> {
         Self::validate_ngrids(ngrids)?;
 
         let dz_bottom_min = match self.dz_bottom_min {
-            Some(value) => value.clone(),
-            None => {
-                // Get the largest negative value from hgrid.depths()
-                let depths_array = hgrid.depths();
-                match depths_array
-                    .iter()
-                    .filter(|&&d| d < 0.0)
-                    .max_by(|a, b| a.partial_cmp(b).unwrap())
-                {
-                    Some(&max_negative) => -max_negative,
-                    None => 0.0, // Default if no negative values exist
-                }
-            }
+            Some(value) => *value,
+            None => 0.3, // Default minimum bottom layer thickness in meters
         };
         VQSBuilder::validate_dz_bottom_min(&dz_bottom_min)?;
         let initial_depth = self.initial_depth.ok_or_else(|| {
@@ -121,7 +110,12 @@ impl<'a> VQSAutoBuilder<'a> {
         shallow_levels: &usize,
         max_levels: &usize,
     ) -> Result<(Vec<f64>, Vec<usize>), VQSAutoBuilderError> {
-        let max_depth = -hgrid.depths().min()?;
+        // Get max depth (positive-down convention: max value = deepest point)
+        let max_depth = hgrid
+            .depths()
+            .iter()
+            .cloned()
+            .fold(f64::NEG_INFINITY, f64::max);
         let x1 = *shallow_levels as f64;
         let y1 = *initial_depth;
         let x2 = *max_levels as f64;

@@ -179,10 +179,11 @@ impl VQS {
         info!("Starting master grid extraction");
         let start = Instant::now();
 
-        let depths = hgrid.depths();
+        // Use positive-up convention (negative values = underwater) for internal calculations
+        let depths = hgrid.depths_positive_up();
         let node_count = depths.len();
 
-        // Collect wet nodes (depth > 0.0 means below water in SCHISM convention)
+        // Collect wet nodes (depth < 0.0 means below water in positive-up convention)
         let mut depth_level_pairs: Vec<(f64, usize)> = Vec::new();
         let mut wet_node_indices: Vec<usize> = Vec::new();
 
@@ -681,13 +682,14 @@ impl VQS {
         kbp: &[usize],
         hgrid: &Hgrid,
     ) -> Result<(Vec<f64>, Vec<usize>), String> {
-        let depths = hgrid.depths();
+        // Use positive-up convention (negative values = underwater) for internal calculations
+        let depths = hgrid.depths_positive_up();
 
         // Collect depth-level pairs for wet nodes
         let mut depth_level_pairs: Vec<(f64, usize)> = Vec::new();
         for (idx, &depth) in depths.iter().enumerate() {
             if depth < 0.0 {
-                // Underwater
+                // Underwater (negative in positive-up convention)
                 depth_level_pairs.push((-depth, kbp[idx]));
             }
         }

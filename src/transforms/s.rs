@@ -189,7 +189,8 @@ impl<'a> STransformBuilder<'a> {
             prev_depth = depth;
         }
 
-        let hgrid_depths = hgrid.depths();
+        // Use positive-up convention (negative values = underwater) for backward compatibility
+        let hgrid_depths = hgrid.depths_positive_up();
         let mut min_hgrid_depth = f64::MAX;
         for &depth in &hgrid_depths {
             min_hgrid_depth = min_hgrid_depth.min(depth);
