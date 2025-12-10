@@ -1,134 +1,109 @@
 # schismrs-vgrid
 
-## TL;DR
+Vertical grid generation for SCHISM ocean model.
 
-There are 2 binaries provided:
+## Binaries
 
-- gen_sz
-- gen_vqs
+| Binary | Purpose |
+|--------|---------|
+| `gen_sz` | Generate SZ (sigma-z) vertical grids |
+| `gen_vqs` | Generate VQS (variable quadratic/S-coordinate) grids |
+| `vqs-designer` | Interactive TUI for designing VQS master grids |
 
-Use the --help flag to get more info for each command.
+Use `--help` for detailed options. Use `--release` for 10x speedups.
 
-Use the --release flag for 10x speedups.
+## gen_sz
 
-### gen_sz
-
-This one is the simplest and most straightforward, used to build SZ grids.
-
-Example usage for gen_sz:
+Generate sigma-z coordinate grids with configurable stretching.
 
 ```bash
-cargo run --release --bin gen_sz -- /path/to/hgrid --show-plot --slevels=20 --theta-f=5 --theta-b=0.7 --critical-depth=5. -o vgrid.in
+cargo run --release --bin gen_sz -- /path/to/hgrid.gr3 \
+    --slevels=20 \
+    --theta-f=5 \
+    --theta-b=0.7 \
+    --critical-depth=5. \
+    --show-plot \
+    -o vgrid.in
 ```
 
-The command above should show the following plot:
 ![sz-20levels](./assets/sz_20levels.png)
-Naturally, the depth levels shown will depend on your input hgrid, but the vertical node distribution should be the same regardless.
 
-### gen_vqs
+## gen_vqs
 
-Currently, there are 2 transforms supported: quadratic and s.
-
-Example usage for gen_vqs:
-
-There are three modes in which gen_vqs can be used:
-
-- hsm: explicitly pass master grid depts and levels
-- kmeans: Uses kmeans clustering to derive an hsm array
-- auto: Uses an exponential function to build master grids
-
-#### hsm mode
+Generate VQS grids using the HSM (Hierarchical Sigma Method) master grid specification.
 
 ```bash
-cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --show-zmas-plot --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. hsm --depths 50.0 60.0 80.0 110.0 150.0 200.0 260.0 330.0 410.0 500.0 600.0 8426.0 --nlevels 21 22 23 24 25 26 27 28 29 30 31 32
+cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
+    --transform s \
+    --dz-bottom-min=1. \
+    --a-vqs0=-0.3 \
+    --theta-b=0. \
+    --theta-f=3. \
+    --show-zmas-plot \
+    -o vgrid.in \
+    hsm --depths 50 60 80 110 150 200 260 330 410 500 600 8426 \
+        --nlevels 21 22 23 24 25 26 27 28 29 30 31 32
 ```
 
-#### kmeans mode
+### Parameters
+
+| Parameter | Description |
+|-----------|-------------|
+| `--transform` | Stretching function: `s` (S-transform) or `quadratic` |
+| `--theta-f` | Surface/bottom focusing intensity (0.1-20) |
+| `--theta-b` | Bottom layer focusing weight (0-1) |
+| `--a-vqs0` | Stretching amplitude (-1 to 1) |
+| `--dz-bottom-min` | Minimum bottom layer thickness |
+
+### HSM Master Grid
+
+The `--depths` and `--nlevels` arrays define the master grid:
+- Each depth threshold maps to a number of vertical levels
+- Levels must be non-decreasing with depth (monotonicity constraint)
+- Nodes are assigned to the appropriate master grid based on their depth
+
+## vqs-designer
+
+Interactive TUI for designing VQS master grids using the LSC² framework.
 
 ```bash
-cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0. --theta-f=3. kmeans --clusters=60 --max-levels=49
+cargo run --release -p schismrs-vgrid --bin vqs-designer
 ```
 
-Below an example output of a 60-cluster kmeans-derived master grids using quadratic transform.
-![kmeans-60clusters-quadratic](./assets/kmeans-60clusters-quadratic.png)
+Features:
+- Dynamic construction table (depths × min Δz)
+- Click or keyboard to select anchor points
+- Monotonicity enforcement (levels never decrease with depth)
+- Real-time zone statistics with stretching preview
+- Export to CLI args, YAML config, or vgrid.in
 
-Zooming in on the shallow nodes, we can see that the number of vertical levels is kept reasonable, which translates into computational economy for shallow nodes.
-![kmeans-zoomed-quadratic](./assets/kmeans-closeup-quadratic.png)
+## Viewing Plots
 
-Same as above, but using S-transform instead.
-![kmeans-60clusters-s](./assets/kmeans-60clusters-s.png)
-![kmeans-zoomed-s](./assets/kmeans-closeup-s.png)
-
-Notes on kmeans clustering:
-
-To me, the kmeans clustering technique looks very promising. Notice that the first level does not start close to 1, but actually it is closer to 6, which I think is good, because perhaps we don't need that much vertical resolution on the shallow nodes, at least for large-mesh, cross-scale processes. On the other hand, increasing the number of clusters will yield shallower values. Keep in mind that the number of master grids doesn't actually change the number of final grids, since those are a function of the node counts. Master grids are just templates!
-
-#### auto mode (recommended)
+Plots are generated as HTML files using Plotly. To view them:
 
 ```bash
-cargo run --release --bin gen_vqs -- /path/to/hgrid -o /path/to/output/vgrid.in --transform s --dz-bottom-min=1. --a-vqs0=-0.3 --theta-b=0.7 --theta-f=10. auto --ngrids=40 --max-levels=49
+python -m http.server 8081
 ```
 
-![auto](./assets/auto.png)
-![auto-zoomed](./assets/auto-zoomed.png)
+Then open `http://localhost:8081` in your browser.
 
-## Compilation issues
+## Compilation
 
-First, create and and activate a new conda environment. The Python version is not relevant, since we're only after some C/C++ dependencies.
+This crate depends on libproj (C++ library). Use conda to provide dependencies:
 
-For example:
-`conda create -n schismrs`
+```bash
+conda create -n schismrs
+conda activate schismrs
+conda install -c conda-forge compilers clang libclang proj
 
-Now activate the environment and install the C/C++ deps
+PROJ_SYS_STATIC=1 \
+LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH \
+PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH \
+cargo build --release
+```
 
-`conda install -c conda-forge compilers clang libclang proj`
+The resulting binary is statically compiled and doesn't require conda at runtime.
 
-Finally, compile with:
-
-`PROJ_SYS_STATIC=1 LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH cargo build --release`
-
-The resulting binary is statically compiled, you won't need to activate the conda environment or modify env variables to use it.
-
-#### Looking at the master plots
-
-The plots are generatd using plotly so they are html files. The easy way to see them is to save them as html and then use the built-in Python http server (with port-forwarding) to see them.
-
-`python -m http.server 8081`
-
-then assuming you used port-forwarding you can access the directory on your local browser and hence see the html plot file.
-
-## Compilation issues
-
-Typically, Rust-only projects don't have compilation issues. However this project uses the libproj library, which is a C++ dependency.
-We can overcome this issues using conda to provide the missing deps:
-
-First, create and and activate a new conda environment. The Python version is not relevant, since we're only after conda-forge dependencies.
-
-For example:
-`conda create -n schismrs`
-
-Now activate the environment and install the C/C++ deps
-
-`conda install -c conda-forge compilers clang libclang proj`
-
-Finally, compile the library with:
-
-`PROJ_SYS_STATIC=1 LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH cargo build --release`
-
-The resulting binary is statically compiled, you won't need to activate the conda environment or modify env variables to use it.
-
-#### Looking at the master plots
-
-The plots are generatd using plotly so they are html files. The easy way to see them is to save them as html and then use the built-in Python http server (with port-forwarding) to see them.
-
-`python -m http.server 8081`
-
-then assuming you used port-forwarding you can access the directory on your local browser and hence see the html plot file.
-
-### TODO:
-
-Piecewise everything, but that may be an overkill, we'll see.
-
-### License
+## License
 
 `SPDX-License-Identifier: LicenseRef-schismrs-license`
