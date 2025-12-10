@@ -77,16 +77,6 @@ Features:
 - Real-time zone statistics with stretching preview
 - Export to CLI args, YAML config, or vgrid.in
 
-## Viewing Plots
-
-Plots are generated as HTML files using Plotly. To view them:
-
-```bash
-python -m http.server 8081
-```
-
-Then open `http://localhost:8081` in your browser.
-
 ## Compilation
 
 This crate depends on libproj (C++ library). Use conda to provide dependencies:
