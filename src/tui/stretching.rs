@@ -113,6 +113,97 @@ pub fn compute_layer_thicknesses(z_coords: &[f64]) -> Vec<f64> {
     thicknesses
 }
 
+/// Result of applying bottom truncation to z-coordinates
+#[derive(Clone, Debug)]
+pub struct TruncationResult {
+    /// Z-coordinates after truncation (may have fewer levels)
+    pub z_coords: Vec<f64>,
+    /// Original number of levels requested
+    pub requested_levels: usize,
+    /// Actual number of levels after truncation
+    pub actual_levels: usize,
+    /// Whether truncation occurred
+    pub was_truncated: bool,
+}
+
+/// Apply bottom layer truncation to z-coordinates
+///
+/// This mimics the logic in vqs_builder.rs where layers are stopped
+/// when the bottom layer would be thinner than dz_bottom_min.
+///
+/// # Arguments
+/// * `z_coords` - Z-coordinates from stretching function (surface to bottom)
+/// * `depth` - Total water depth at this point
+/// * `dz_bottom_min` - Minimum allowed bottom layer thickness
+///
+/// # Returns
+/// TruncationResult with truncated z-coordinates and metadata
+pub fn apply_bottom_truncation(
+    z_coords: &[f64],
+    depth: f64,
+    dz_bottom_min: f64,
+) -> TruncationResult {
+    let requested_levels = z_coords.len();
+
+    if z_coords.is_empty() {
+        return TruncationResult {
+            z_coords: vec![],
+            requested_levels: 0,
+            actual_levels: 0,
+            was_truncated: false,
+        };
+    }
+
+    // Threshold: stop when z would go below -depth + dz_bottom_min
+    let threshold = -depth + dz_bottom_min;
+
+    let mut truncated: Vec<f64> = Vec::with_capacity(z_coords.len());
+
+    for &z in z_coords {
+        if z >= threshold {
+            truncated.push(z);
+        } else {
+            // We've hit the bottom threshold
+            break;
+        }
+    }
+
+    // Ensure at least 2 levels (surface and bottom)
+    if truncated.len() < 2 && z_coords.len() >= 2 {
+        truncated = vec![z_coords[0], -depth];
+    }
+
+    let actual_levels = truncated.len();
+    let was_truncated = actual_levels < requested_levels;
+
+    TruncationResult {
+        z_coords: truncated,
+        requested_levels,
+        actual_levels,
+        was_truncated,
+    }
+}
+
+/// Compute z-coordinates with bottom truncation applied
+///
+/// Combines stretching calculation with truncation in one call.
+pub fn compute_z_with_truncation(
+    depth: f64,
+    nlevels: usize,
+    params: &StretchingParams,
+    first_depth: f64,
+    dz_bottom_min: f64,
+    use_s_transform: bool,
+) -> TruncationResult {
+    let z_coords = if use_s_transform {
+        compute_s_transform_z(depth, nlevels, params, first_depth)
+    } else {
+        compute_quadratic_z(depth, nlevels, params)
+    };
+
+    apply_bottom_truncation(&z_coords, depth, dz_bottom_min)
+}
+
 /// Compute statistics for all zones in a path
 pub fn compute_path_zone_stats(
     depths: &[f64],
@@ -160,24 +251,6 @@ pub fn compute_path_zone_stats(
     }
 
     zones
-}
-
-/// Generate a simple ASCII visualization of layer distribution
-pub fn layer_distribution_ascii(thicknesses: &[f64], width: usize) -> Vec<String> {
-    if thicknesses.is_empty() {
-        return vec![];
-    }
-
-    let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
-    let mut lines = Vec::new();
-
-    for (i, &dz) in thicknesses.iter().enumerate() {
-        let bar_len = ((dz / max_dz) * (width as f64 - 10.0)) as usize;
-        let bar = "█".repeat(bar_len.max(1));
-        lines.push(format!("{:2} {:5.2}m {}", i + 1, dz, bar));
-    }
-
-    lines
 }
 
 #[cfg(test)]
