@@ -4,7 +4,6 @@ use super::errors::VQSAutoBuilderError;
 use super::vqs::VQS;
 use super::vqs_builder::VQSBuilder;
 use crate::transforms::StretchingFunction;
-use ndarray_stats::QuantileExt;
 use schismrs_hgrid::hgrid::Hgrid;
 
 #[derive(Default)]

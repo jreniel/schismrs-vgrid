@@ -275,8 +275,6 @@ pub fn compute_layer_thicknesses(z_coords: &[f64]) -> Vec<f64> {
 pub struct TruncationResult {
     /// Z-coordinates after truncation (may have fewer levels)
     pub z_coords: Vec<f64>,
-    /// Original number of levels requested
-    pub requested_levels: usize,
     /// Actual number of levels after truncation
     pub actual_levels: usize,
     /// Whether truncation occurred
@@ -305,7 +303,6 @@ pub fn apply_bottom_truncation(
     if z_coords.is_empty() {
         return TruncationResult {
             z_coords: vec![],
-            requested_levels: 0,
             actual_levels: 0,
             was_truncated: false,
         };
@@ -335,7 +332,6 @@ pub fn apply_bottom_truncation(
 
     TruncationResult {
         z_coords: truncated,
-        requested_levels,
         actual_levels,
         was_truncated,
     }

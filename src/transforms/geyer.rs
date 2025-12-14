@@ -19,9 +19,6 @@ pub struct GeyerTransform {
     zmas: Array2<f64>,
     etal: f64,
     a_vqs0: f64,
-    theta_s: f64,
-    theta_b: f64,
-    hc: f64,
 }
 
 impl Transform for GeyerTransform {
@@ -88,9 +85,6 @@ impl<'a> GeyerTransformBuilder<'a> {
             zmas,
             etal: *etal,
             a_vqs0: *a_vqs0,
-            theta_s: *theta_s,
-            theta_b: *theta_b,
-            hc: *hc,
         })
     }
 

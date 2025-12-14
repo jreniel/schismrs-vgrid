@@ -554,7 +554,6 @@ impl<'a> VQSBuilder<'a> {
 
         // Find bottom level and interpolate z-coordinates
         let mut bottom_level = 0;
-        let mut last_z3 = elevation;
 
         for k in 0..master_levels[grid_idx] {
             // Interpolate between master grids
@@ -578,7 +577,6 @@ impl<'a> VQSBuilder<'a> {
                 // Store z-coordinate
                 z_coords[[k, node_idx]] = z3;
                 bottom_level = k + 1; // +1 because we want the count, not index
-                last_z3 = z3;
             } else {
                 // We've reached the bottom
                 trace!(

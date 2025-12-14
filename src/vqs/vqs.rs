@@ -181,7 +181,7 @@ impl VQS {
 
         // Use positive-up convention (negative values = underwater) for internal calculations
         let depths = hgrid.depths_positive_up();
-        let node_count = depths.len();
+        let _node_count = depths.len();
 
         // Collect wet nodes (depth < 0.0 means below water in positive-up convention)
         let mut depth_level_pairs: Vec<(f64, usize)> = Vec::new();
