@@ -179,6 +179,32 @@ impl PathSelection {
         self.validation_errors.push(PathError::InsufficientAnchors);
     }
 
+    /// Add an anchor directly (for suggestion mode)
+    /// Does not toggle - always adds if not already present at this depth
+    pub fn add_anchor(&mut self, depth_idx: usize, dz_idx: usize, depth: f64, nlevels: usize) {
+        // Check if already have an anchor at this depth - skip if so
+        if self.anchors.iter().any(|a| a.depth_idx == depth_idx) {
+            return;
+        }
+
+        let anchor = PathAnchor {
+            depth_idx,
+            dz_idx,
+            depth,
+            nlevels,
+        };
+
+        // Insert in sorted order by depth
+        let insert_pos = self
+            .anchors
+            .iter()
+            .position(|a| a.depth > depth)
+            .unwrap_or(self.anchors.len());
+        self.anchors.insert(insert_pos, anchor);
+
+        self.validate();
+    }
+
     /// Get the number of selected anchors
     pub fn len(&self) -> usize {
         self.anchors.len()

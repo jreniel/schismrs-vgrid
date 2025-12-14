@@ -22,7 +22,6 @@ pub enum Event {
 /// Event handler that polls for terminal events
 pub struct EventHandler {
     rx: mpsc::UnboundedReceiver<Event>,
-    _tx: mpsc::UnboundedSender<Event>,
 }
 
 impl EventHandler {
@@ -30,24 +29,23 @@ impl EventHandler {
     pub fn new(tick_rate_ms: u64) -> Self {
         let tick_rate = Duration::from_millis(tick_rate_ms);
         let (tx, rx) = mpsc::unbounded_channel();
-        let tx_clone = tx.clone();
 
         tokio::spawn(async move {
             loop {
                 if event::poll(tick_rate).unwrap_or(false) {
                     match event::read() {
                         Ok(CrosstermEvent::Key(key)) => {
-                            if tx_clone.send(Event::Key(key)).is_err() {
+                            if tx.send(Event::Key(key)).is_err() {
                                 break;
                             }
                         }
                         Ok(CrosstermEvent::Mouse(mouse)) => {
-                            if tx_clone.send(Event::Mouse(mouse)).is_err() {
+                            if tx.send(Event::Mouse(mouse)).is_err() {
                                 break;
                             }
                         }
                         Ok(CrosstermEvent::Resize(w, h)) => {
-                            if tx_clone.send(Event::Resize(w, h)).is_err() {
+                            if tx.send(Event::Resize(w, h)).is_err() {
                                 break;
                             }
                         }
@@ -56,14 +54,14 @@ impl EventHandler {
                     }
                 } else {
                     // Send tick event
-                    if tx_clone.send(Event::Tick).is_err() {
+                    if tx.send(Event::Tick).is_err() {
                         break;
                     }
                 }
             }
         });
 
-        Self { rx, _tx: tx }
+        Self { rx }
     }
 
     /// Wait for the next event

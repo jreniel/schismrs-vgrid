@@ -1,132 +1,96 @@
-use clap::{Args, Parser, Subcommand, ValueEnum};
+use clap::{Parser, ValueEnum};
 use pretty_env_logger;
 use schismrs_hgrid::hgrid::Hgrid;
 use schismrs_vgrid::transforms::quadratic::QuadraticTransformOpts;
 use schismrs_vgrid::transforms::s::STransformOpts;
 use schismrs_vgrid::transforms::StretchingFunction;
-use schismrs_vgrid::vqs::{VQSAutoBuilder, VQSBuilder, VQSKMeansBuilder};
+use schismrs_vgrid::vqs::VQSBuilder;
 use std::process::ExitCode;
 use std::{error::Error, path::PathBuf};
 
 #[derive(Parser, Debug)]
-#[command(author, about, long_about = None, version = env!("SCHISMRS_VGRID_VERSION"))]
+#[command(
+    author,
+    about = "Generate VQS (Variable Quadratic Sigma) vertical grid using the HSM method",
+    long_about = None,
+    version = env!("SCHISMRS_VGRID_VERSION")
+)]
 struct Cli {
+    /// Path to the hgrid.gr3 file
     hgrid_path: PathBuf,
+
+    /// Master grid depths (space-separated, e.g., "0.4 5 10 30")
+    #[clap(short, long, value_delimiter = ' ', num_args = 1.., required = true)]
+    depths: Vec<f64>,
+
+    /// Number of levels at each master grid depth (space-separated, e.g., "2 10 15 30")
+    #[clap(short, long, value_delimiter = ' ', num_args = 1.., required = true)]
+    nlevels: Vec<usize>,
+
+    /// Output file path (default: vgrid.in in current directory)
     #[clap(short, long)]
     output_filepath: Option<PathBuf>,
-    #[clap(short, long)]
+
+    /// Stretching function type
+    #[clap(short, long, default_value = "s")]
     transform: StretchingFunctionKind,
-    #[clap(
-        short,
-        long,
-        default_value = "0.",
-        help = "|a_vqs0|<=1. -- -1 skew towards bottom, 1. skew towards surface"
-    )]
+
+    /// Stretching parameter: -1 skew towards bottom, 1 skew towards surface
+    #[clap(short, long, default_value = "-1.0")]
     a_vqs0: Option<f64>,
-    #[clap(short, long, default_value = "0.", help = "defined as positive down")]
+
+    /// Reference elevation (positive down)
+    #[clap(short, long, default_value = "0.")]
     etal: Option<f64>,
-    #[clap(short, long, default_value = "0.3")]
+
+    /// Skew decay rate for quadratic transform
+    #[clap(short, long, default_value = "0.03")]
     skew_decay_rate: Option<f64>,
-    #[clap(
-        long,
-        help = "Range is (0., 20.]. Values closer to 0. make the transformation \
-                more similar to traditional sigma. Larger values will increase \
-                resolution at the top and bottom. If zeo is used, it uses f32::EPSILON.",
-        default_value = "0.000001"
-    )]
+
+    /// S-transform theta_f: surface/bottom focusing intensity (0.1-20)
+    #[clap(long, default_value = "3.0")]
     theta_f: Option<f64>,
-    #[clap(
-        long,
-        help = "Range is [0., 1.]. For values closer to 0. the surface is \
-                resolved. For values closer to 1., but the surface and bottom \
-                are resolved.",
-        default_value = "0.5"
-    )]
+
+    /// S-transform theta_b: bottom layer focusing weight (0-1)
+    #[clap(long, default_value = "0.5")]
     theta_b: Option<f64>,
-    #[clap(long)]
+
+    /// Minimum bottom layer thickness in meters
+    #[clap(long, default_value = "0.3")]
     dz_bottom_min: Option<f64>,
+
+    /// Show z_mas plot (requires plotly)
     #[clap(long, action)]
     show_zmas_plot: bool,
+
+    /// Save z_mas plot to HTML file
     #[clap(long)]
     save_zmas_plot: Option<PathBuf>,
-    #[clap(subcommand)]
-    mode: Modes,
 }
 
-#[derive(ValueEnum, Clone, Debug)]
+#[derive(ValueEnum, Clone, Debug, Default)]
 enum StretchingFunctionKind {
     Quadratic,
+    #[default]
     S,
-    // Shchepetkin2005,
-    // Geyer,
-    // Shchepetkin2010,
-    // FixedZ
-    // MultiMaster
-}
-
-#[derive(Subcommand, Debug)]
-enum Modes {
-    Kmeans(KmeansCliOpts),
-    Hsm(HsmCliOpts),
-    Auto(AutoCliOpts),
-}
-
-#[derive(Args, Debug)]
-struct KmeansCliOpts {
-    #[clap(short, long, help = "Number of clusters. Must be an interger >= 1")]
-    clusters: usize,
-    #[clap(
-        short,
-        long,
-        default_value = "2",
-        help = "Controls the initial number of layers. Must be an integer >= 2."
-    )]
-    shallow_levels: Option<usize>,
-    #[clap(
-        long,
-        help = "Controls the maximum number of layers in the clustering hierarchy. \
-                Defaults to shallow_levels + clusters - 1"
-    )]
-    max_levels: Option<usize>,
-}
-
-#[derive(Args, Debug)]
-struct HsmCliOpts {
-    #[clap(short, long, value_delimiter = ' ', num_args = 1..)]
-    depths: Vec<f64>,
-    #[clap(short, long, value_delimiter = ' ', num_args = 1..)]
-    nlevels: Vec<usize>,
-}
-
-#[derive(Args, Debug)]
-struct AutoCliOpts {
-    #[clap(long, help = "Number of master grids to generate. Must be an int >= 1")]
-    ngrids: usize,
-    #[clap(
-        long,
-        default_value = "1.",
-        help = "This is the first depth below etal. This input is positive down."
-    )]
-    initial_depth: Option<f64>,
-    #[clap(
-        short,
-        long,
-        default_value = "2",
-        help = "Controls the initial number of layers. Must be an integer >= 2."
-    )]
-    shallow_levels: Option<usize>,
-    #[clap(
-        long,
-        help = "Controls the maximum number of layers in the clustering hierarchy. \
-                Defaults to shallow_levels + clusters - 1"
-    )]
-    max_levels: Option<usize>,
 }
 
 fn entrypoint() -> Result<(), Box<dyn Error>> {
     pretty_env_logger::init();
     let cli = Cli::parse();
+
+    // Validate depths and nlevels have same length
+    if cli.depths.len() != cli.nlevels.len() {
+        return Err(format!(
+            "depths ({}) and nlevels ({}) must have the same number of values",
+            cli.depths.len(),
+            cli.nlevels.len()
+        )
+        .into());
+    }
+
     let hgrid = Hgrid::try_from(&cli.hgrid_path)?;
+
     let transform = match cli.transform {
         StretchingFunctionKind::Quadratic => {
             let quadratic_opts = QuadraticTransformOpts {
@@ -146,76 +110,45 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
             StretchingFunction::S(s_opts)
         }
     };
-    let vqs = match &cli.mode {
-        Modes::Hsm(opts) => {
-            let mut builder = VQSBuilder::default();
-            builder.hgrid(&hgrid);
-            builder.depths(&opts.depths);
-            builder.nlevels(&opts.nlevels);
-            if cli.dz_bottom_min.is_some() {
-                builder.dz_bottom_min(cli.dz_bottom_min.as_ref().unwrap());
-            }
-            builder.stretching(&transform);
-            builder.build()?
-        }
-        Modes::Kmeans(opts) => {
-            let mut builder = VQSKMeansBuilder::default();
-            builder.hgrid(&hgrid);
-            builder.stretching(&transform);
-            builder.nclusters(&opts.clusters);
-            if cli.dz_bottom_min.is_some() {
-                builder.dz_bottom_min(cli.dz_bottom_min.as_ref().unwrap());
-            }
-            builder.etal(cli.etal.as_ref().unwrap());
-            if let Some(shallow_levels) = &opts.shallow_levels {
-                builder.shallow_levels(shallow_levels);
-            }
-            if let Some(max_levels) = &opts.max_levels {
-                builder.max_levels(max_levels);
-            }
-            builder.build()?
-        }
-        Modes::Auto(opts) => {
-            let mut builder = VQSAutoBuilder::default();
-            builder.hgrid(&hgrid);
-            builder.stretching(&transform);
-            builder.ngrids(&opts.ngrids);
-            if cli.dz_bottom_min.is_some() {
-                builder.dz_bottom_min(cli.dz_bottom_min.as_ref().unwrap());
-            }
-            builder.initial_depth(&opts.initial_depth.as_ref().unwrap());
-            builder.shallow_levels(&opts.shallow_levels.as_ref().unwrap());
-            if let Some(max_levels) = &opts.max_levels {
-                builder.max_levels(max_levels);
-            }
-            builder.build()?
-        }
-    };
-    if cli.output_filepath.is_some() {
-        vqs.write_to_file(&cli.output_filepath.as_ref().unwrap())?;
-    };
 
+    // Build VQS
+    let mut builder = VQSBuilder::default();
+    builder.hgrid(&hgrid);
+    builder.depths(&cli.depths);
+    builder.nlevels(&cli.nlevels);
+    if let Some(dz_min) = &cli.dz_bottom_min {
+        builder.dz_bottom_min(dz_min);
+    }
+    builder.stretching(&transform);
+    let vqs = builder.build()?;
+
+    // Write output
+    if let Some(output_path) = &cli.output_filepath {
+        vqs.write_to_file(output_path)?;
+        println!("Wrote {}", output_path.display());
+    }
+
+    // Handle plotting
     if cli.show_zmas_plot || cli.save_zmas_plot.is_some() {
         let zmas_plot = vqs.make_z_mas_plot()?;
         if let Some(save_path) = &cli.save_zmas_plot {
             zmas_plot.write_html(save_path);
+            println!("Saved plot to {}", save_path.display());
         }
         if cli.show_zmas_plot {
-            println!("should showw");
             zmas_plot.show();
-            println!("done showing");
         }
     }
+
     Ok(())
 }
 
 fn main() -> ExitCode {
-    let exit_code = match entrypoint() {
+    match entrypoint() {
         Err(e) => {
             eprintln!("Error: {}", e);
-            return ExitCode::FAILURE;
+            ExitCode::FAILURE
         }
         Ok(_) => ExitCode::SUCCESS,
-    };
-    exit_code
+    }
 }

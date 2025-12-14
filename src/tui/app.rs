@@ -5,12 +5,41 @@
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::prelude::Rect;
+use schismrs_hgrid::Hgrid;
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use super::path::PathSelection;
 use super::stretching::StretchingParams;
 use super::table::{ConstructionTable, EditMode};
+
+use crate::transforms::quadratic::QuadraticTransformOpts;
+use crate::transforms::s::STransformOpts;
+use crate::transforms::StretchingFunction;
+use crate::vqs::VQSBuilder;
+
+use super::suggestions::SuggestionMode;
+
+/// Information about a loaded mesh (hgrid)
+#[derive(Debug)]
+pub struct MeshInfo {
+    /// Path to the hgrid file
+    pub path: PathBuf,
+    /// The loaded hgrid (needed for VQS generation)
+    pub hgrid: Hgrid,
+    /// Number of nodes in the mesh
+    pub node_count: usize,
+    /// Minimum depth (excluding dry nodes)
+    pub min_depth: f64,
+    /// Maximum depth
+    pub max_depth: f64,
+    /// Mean depth
+    pub mean_depth: f64,
+    /// Median depth
+    pub median_depth: f64,
+    /// Depth percentiles: 10%, 25%, 50%, 75%, 90%
+    pub percentiles: [f64; 5],
+}
 
 /// Main application state
 pub struct App {
@@ -23,8 +52,8 @@ pub struct App {
     /// Active UI focus
     pub focus: Focus,
 
-    /// Optional hgrid path for live VQS generation
-    pub hgrid_path: Option<PathBuf>,
+    /// Loaded mesh information (if hgrid was provided)
+    pub mesh_info: Option<MeshInfo>,
 
     /// Output directory for generated files
     pub output_dir: PathBuf,
@@ -40,6 +69,9 @@ pub struct App {
 
     /// Export options
     pub export_options: ExportOptions,
+
+    /// Suggestion mode state (None = not in suggestion mode)
+    pub suggestion_mode: Option<SuggestionMode>,
 
     /// Cached table area for mouse hit detection
     pub table_area: Rect,
@@ -126,16 +158,20 @@ impl Default for ExportOptions {
 impl App {
     /// Create a new application with optional hgrid and output directory
     pub fn new(hgrid_path: Option<PathBuf>, output_dir: PathBuf) -> Self {
+        let mut table = ConstructionTable::new();
+        let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
+
         Self {
-            table: ConstructionTable::new(),
+            table,
             path: PathSelection::new(),
             focus: Focus::Table,
-            hgrid_path,
+            mesh_info,
             output_dir,
             show_help: false,
             frame: 0,
             status_message: None,
             export_options: ExportOptions::default(),
+            suggestion_mode: None,
             table_area: Rect::default(),
             export_area: Rect::default(),
             preview_area: Rect::default(),
@@ -150,21 +186,101 @@ impl App {
         hgrid_path: Option<PathBuf>,
         output_dir: PathBuf,
     ) -> Self {
+        let mut table = ConstructionTable::with_values(depths, min_dzs);
+        let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
+
         Self {
-            table: ConstructionTable::with_values(depths, min_dzs),
+            table,
             path: PathSelection::new(),
             focus: Focus::Table,
-            hgrid_path,
+            mesh_info,
             output_dir,
             show_help: false,
             frame: 0,
             status_message: None,
             export_options: ExportOptions::default(),
+            suggestion_mode: None,
             table_area: Rect::default(),
             export_area: Rect::default(),
             preview_area: Rect::default(),
             should_quit: false,
         }
+    }
+
+    /// Recompute suggestions based on current algorithm and parameters
+    pub fn compute_suggestions(&mut self) {
+        let mesh = match &self.mesh_info {
+            Some(m) => m,
+            None => return,
+        };
+
+        if let Some(ref mut mode) = self.suggestion_mode {
+            mode.update_preview(mesh);
+        }
+    }
+
+    /// Load an hgrid file and compute mesh statistics
+    /// Returns None if loading fails (error will be logged)
+    fn load_mesh(path: &PathBuf, table: &mut ConstructionTable) -> Option<MeshInfo> {
+        // Try to load the hgrid
+        let hgrid = match Hgrid::try_from(path) {
+            Ok(h) => h,
+            Err(e) => {
+                eprintln!("Warning: Failed to load hgrid '{}': {}", path.display(), e);
+                return None;
+            }
+        };
+
+        // Get depths (positive-down convention: positive values = underwater)
+        let depths: Vec<f64> = hgrid
+            .depths()
+            .iter()
+            .filter(|&&d| d > 0.0) // Only underwater nodes
+            .copied()
+            .collect();
+
+        if depths.is_empty() {
+            eprintln!("Warning: No underwater nodes found in hgrid");
+            return None;
+        }
+
+        let node_count = depths.len();
+        let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+        let mean_depth = depths.iter().sum::<f64>() / depths.len() as f64;
+
+        // Compute percentiles
+        let mut sorted_depths = depths.clone();
+        sorted_depths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        let percentile = |p: f64| -> f64 {
+            let idx = (p * (sorted_depths.len() - 1) as f64) as usize;
+            sorted_depths[idx]
+        };
+
+        let percentiles = [
+            percentile(0.10), // 10%
+            percentile(0.25), // 25%
+            percentile(0.50), // 50% (median)
+            percentile(0.75), // 75%
+            percentile(0.90), // 90%
+        ];
+
+        let median_depth = percentiles[2];
+
+        // Constrain the table to the mesh depth range
+        table.constrain_to_depth(max_depth);
+
+        Some(MeshInfo {
+            path: path.clone(),
+            hgrid,
+            node_count,
+            min_depth,
+            max_depth,
+            mean_depth,
+            median_depth,
+            percentiles,
+        })
     }
 
     /// Handle tick events (animation, message expiry)
@@ -206,6 +322,12 @@ impl App {
         // Handle based on edit mode first
         if self.table.edit_mode != EditMode::Navigate {
             self.handle_edit_mode_key(key);
+            return;
+        }
+
+        // Handle suggestion mode if active
+        if self.suggestion_mode.is_some() {
+            self.handle_suggestion_mode_key(key);
             return;
         }
 
@@ -428,6 +550,25 @@ impl App {
                 self.focus = Focus::Export;
             }
 
+            // Enter suggestion mode (requires loaded mesh)
+            KeyCode::Char('S') => {
+                if self.mesh_info.is_some() {
+                    let mode = SuggestionMode::new();
+                    self.suggestion_mode = Some(mode);
+                    self.set_status(
+                        "Suggestion mode: 1-4 select algorithm, +/- levels, Enter accept, Esc cancel",
+                        StatusLevel::Info,
+                    );
+                    // Trigger initial computation
+                    self.compute_suggestions();
+                } else {
+                    self.set_status(
+                        "Suggestion mode requires a mesh (use -g flag)",
+                        StatusLevel::Warning,
+                    );
+                }
+            }
+
             _ => {}
         }
     }
@@ -606,6 +747,248 @@ impl App {
         }
     }
 
+    /// Handle keyboard input in suggestion mode
+    fn handle_suggestion_mode_key(&mut self, key: KeyEvent) {
+        // Handle Esc first - exit suggestion mode
+        if key.code == KeyCode::Esc {
+            self.suggestion_mode = None;
+            self.set_status("Suggestion mode cancelled", StatusLevel::Info);
+            return;
+        }
+
+        // Handle Enter - accept suggestions
+        if key.code == KeyCode::Enter {
+            if let Some(mode) = self.suggestion_mode.take() {
+                self.path.clear();
+
+                for anchor in &mode.preview {
+                    // Find the closest depth row in the table
+                    let depth_idx = self
+                        .table
+                        .depths
+                        .iter()
+                        .enumerate()
+                        .min_by(|(_, a), (_, b)| {
+                            let da = (*a - anchor.depth).abs();
+                            let db = (*b - anchor.depth).abs();
+                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+
+                    // Find a suitable column based on implied dz
+                    let implied_dz = if anchor.nlevels > 1 {
+                        anchor.depth / (anchor.nlevels - 1) as f64
+                    } else {
+                        anchor.depth
+                    };
+
+                    let col_idx = self
+                        .table
+                        .min_dzs
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, &dz)| dz <= implied_dz)
+                        .max_by(|(_, a), (_, b)| {
+                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                        })
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+
+                    // Add anchor to path
+                    self.path.add_anchor(depth_idx, col_idx, anchor.depth, anchor.nlevels);
+                }
+
+                let count = mode.preview.len();
+                self.set_status(
+                    format!("Applied {} suggested anchors", count),
+                    StatusLevel::Success,
+                );
+            }
+            return;
+        }
+
+        // Track if we need to recompute
+        let mut needs_recompute = false;
+
+        // Handle parameter adjustments
+        let status_msg: Option<(String, StatusLevel)> = match key.code {
+            // Algorithm selection (1-3)
+            KeyCode::Char(c @ '1'..='3') => {
+                let n = c.to_digit(10).unwrap_or(1) as usize;
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    if mode.select_algorithm(n) {
+                        needs_recompute = true;
+                        Some((format!("Algorithm: {}", mode.algorithm.name()), StatusLevel::Info))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
+
+            // Adjust target levels
+            KeyCode::Char('+') | KeyCode::Char('=') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_target_levels(1);
+                    needs_recompute = true;
+                    Some((format!("Target levels: {}", mode.params.target_levels), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('-') | KeyCode::Char('_') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_target_levels(-1);
+                    needs_recompute = true;
+                    Some((format!("Target levels: {}", mode.params.target_levels), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Adjust min_dz
+            KeyCode::Char(']') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_min_dz(0.1);
+                    needs_recompute = true;
+                    Some((format!("Min dz: {:.1}m", mode.params.min_dz), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('[') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_min_dz(-0.1);
+                    needs_recompute = true;
+                    Some((format!("Min dz: {:.1}m", mode.params.min_dz), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Adjust number of anchors
+            KeyCode::Char('>') | KeyCode::Char('.') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_num_anchors(1);
+                    needs_recompute = true;
+                    Some((format!("Anchors: {}", mode.params.num_anchors), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('<') | KeyCode::Char(',') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_num_anchors(-1);
+                    needs_recompute = true;
+                    Some((format!("Anchors: {}", mode.params.num_anchors), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Adjust shallow levels
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_shallow_levels(1);
+                    needs_recompute = true;
+                    Some((format!("Shallow levels: {}", mode.params.shallow_levels), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(ref mut mode) = self.suggestion_mode {
+                    mode.adjust_shallow_levels(-1);
+                    needs_recompute = true;
+                    Some((format!("Shallow levels: {}", mode.params.shallow_levels), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Toggle stretching transform type
+            KeyCode::Char('t') => {
+                self.export_options.stretching = match self.export_options.stretching {
+                    StretchingType::S => StretchingType::Quadratic,
+                    StretchingType::Quadratic => StretchingType::S,
+                };
+                let name = match self.export_options.stretching {
+                    StretchingType::S => "S-transform",
+                    StretchingType::Quadratic => "Quadratic",
+                };
+                Some((format!("Transform: {}", name), StatusLevel::Info))
+            }
+
+            // Adjust theta_f (S-transform): F/f = increase/decrease
+            KeyCode::Char('F') => {
+                if matches!(self.export_options.stretching, StretchingType::S) {
+                    self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
+                    Some((format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('f') => {
+                if matches!(self.export_options.stretching, StretchingType::S) {
+                    self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
+                    Some((format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Adjust theta_b (S-transform): B/b = increase/decrease
+            KeyCode::Char('B') => {
+                if matches!(self.export_options.stretching, StretchingType::S) {
+                    self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
+                    Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('b') => {
+                if matches!(self.export_options.stretching, StretchingType::S) {
+                    self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
+                    Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Adjust a_vqs0 (Quadratic): A/a = increase/decrease
+            KeyCode::Char('A') => {
+                if matches!(self.export_options.stretching, StretchingType::Quadratic) {
+                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
+                    Some((format!("a_vqs: {:.1}", self.export_options.a_vqs0), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Char('a') => {
+                if matches!(self.export_options.stretching, StretchingType::Quadratic) {
+                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 - 0.1).max(-1.0);
+                    Some((format!("a_vqs: {:.1}", self.export_options.a_vqs0), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            _ => None,
+        };
+
+        // Set status message
+        if let Some((msg, level)) = status_msg {
+            self.set_status(msg, level);
+        }
+
+        // Trigger recomputation if needed
+        if needs_recompute {
+            self.compute_suggestions();
+        }
+    }
+
     /// Get stretching parameters from export options
     pub fn get_stretching_params(&self) -> StretchingParams {
         StretchingParams {
@@ -681,14 +1064,97 @@ impl App {
                 self.set_status(format!("YAML:\n{}", output), StatusLevel::Success);
             }
             OutputFormat::VgridFile => {
-                if self.hgrid_path.is_none() {
-                    self.set_status(
-                        "Cannot generate vgrid.in: no hgrid specified (use -g flag)",
-                        StatusLevel::Error,
-                    );
+                let mesh = match &self.mesh_info {
+                    Some(m) => m,
+                    None => {
+                        self.set_status(
+                            "Cannot generate vgrid.in: no hgrid loaded (use -g flag)",
+                            StatusLevel::Error,
+                        );
+                        return;
+                    }
+                };
+
+                // Extract HSM config from path
+                let (depths, nlevels) = self.path.to_hsm_config();
+
+                if depths.is_empty() {
+                    self.set_status("Cannot export: no anchors selected", StatusLevel::Error);
                     return;
                 }
-                self.set_status("VGrid generation not yet implemented", StatusLevel::Warning);
+
+                // Validate: deepest anchor must cover mesh max depth
+                if let Some(&deepest) = depths.last() {
+                    if deepest < mesh.max_depth {
+                        self.set_status(
+                            format!(
+                                "Error: deepest anchor ({:.1}m) < mesh max ({:.1}m)",
+                                deepest, mesh.max_depth
+                            ),
+                            StatusLevel::Error,
+                        );
+                        return;
+                    }
+                }
+
+                // Build VQS using the configured stretching function
+                let a_vqs0 = self.export_options.a_vqs0;
+                let etal = 0.0;
+                let theta_f = self.export_options.theta_f;
+                let theta_b = self.export_options.theta_b;
+                let skew_decay_rate = 0.03;
+                let dz_bottom_min = 0.3;
+
+                let result = match self.export_options.stretching {
+                    StretchingType::S => {
+                        let opts = STransformOpts {
+                            a_vqs0: &a_vqs0,
+                            etal: &etal,
+                            theta_b: &theta_b,
+                            theta_f: &theta_f,
+                        };
+                        let transform = StretchingFunction::S(opts);
+                        VQSBuilder::default()
+                            .hgrid(&mesh.hgrid)
+                            .depths(&depths)
+                            .nlevels(&nlevels)
+                            .stretching(&transform)
+                            .dz_bottom_min(&dz_bottom_min)
+                            .build()
+                    }
+                    StretchingType::Quadratic => {
+                        let opts = QuadraticTransformOpts {
+                            a_vqs0: &a_vqs0,
+                            etal: &etal,
+                            skew_decay_rate: &skew_decay_rate,
+                        };
+                        let transform = StretchingFunction::Quadratic(opts);
+                        VQSBuilder::default()
+                            .hgrid(&mesh.hgrid)
+                            .depths(&depths)
+                            .nlevels(&nlevels)
+                            .stretching(&transform)
+                            .dz_bottom_min(&dz_bottom_min)
+                            .build()
+                    }
+                };
+
+                match result {
+                    Ok(vqs) => {
+                        let output_path = self.output_dir.join("vgrid.in");
+                        match vqs.write_to_file(&output_path) {
+                            Ok(_) => self.set_status(
+                                format!("Wrote {}", output_path.display()),
+                                StatusLevel::Success,
+                            ),
+                            Err(e) => self.set_status(
+                                format!("Write error: {}", e),
+                                StatusLevel::Error,
+                            ),
+                        }
+                    }
+                    Err(e) => self.set_status(format!("VQS build error: {}", e), StatusLevel::Error),
+                }
             }
         }
     }

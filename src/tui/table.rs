@@ -290,6 +290,28 @@ impl ConstructionTable {
             self.cursor.1 += 1;
         }
     }
+
+    /// Constrain the table to only show depths up to max_depth
+    /// Adds max_depth as a row if not already present
+    pub fn constrain_to_depth(&mut self, max_depth: f64) {
+        // Filter depths to only include values <= max_depth
+        self.depths.retain(|&d| d <= max_depth);
+
+        // Add max_depth as final row if not already present (within tolerance)
+        if !self.depths.iter().any(|&d| (d - max_depth).abs() < 0.001) {
+            self.depths.push(max_depth);
+            self.depths
+                .sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        }
+
+        // Recompute cell values
+        self.recompute_cells();
+
+        // Adjust cursor if now out of bounds
+        if self.cursor.0 >= self.depths.len() {
+            self.cursor.0 = self.depths.len().saturating_sub(1);
+        }
+    }
 }
 
 #[cfg(test)]

@@ -10,11 +10,13 @@ mod export;
 mod path;
 mod preview;
 mod stretching;
+pub mod suggestions;
 mod table;
 pub mod ui;
 
-pub use app::{App, ExportOptions, Focus, OutputFormat, StatusLevel, StatusMessage, StretchingType};
+pub use app::{App, ExportOptions, Focus, MeshInfo, OutputFormat, StatusLevel, StatusMessage, StretchingType};
 pub use event::{Event, EventHandler};
 pub use path::{PathAnchor, PathError, PathSelection};
 pub use stretching::{StretchingParams, ZoneStats};
+pub use suggestions::{Anchor, SuggestionAlgorithm, SuggestionMode, SuggestionParams};
 pub use table::{CellValidity, CellValue, ConstructionTable, EditMode};
