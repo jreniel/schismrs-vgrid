@@ -17,6 +17,6 @@ pub mod ui;
 pub use app::{App, ExportOptions, Focus, MeshInfo, OutputFormat, StatusLevel, StatusMessage, StretchingType};
 pub use event::{Event, EventHandler};
 pub use path::{PathAnchor, PathError, PathSelection};
-pub use stretching::{StretchingKind, StretchingParams, ZoneStats};
+pub use stretching::{StretchingKind, StretchingParams, ZoneStats, compute_mesh_zone_stats};
 pub use suggestions::{Anchor, SuggestionAlgorithm, SuggestionMode, SuggestionParams};
 pub use table::{CellValidity, CellValue, ConstructionTable, EditMode};

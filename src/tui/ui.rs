@@ -36,6 +36,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_export_modal(frame, area, app);
     }
 
+    // Transform help overlay if active
+    if app.show_transform_help {
+        render_transform_help_overlay(frame, area, app);
+    }
+
     // Help overlay if active (on top of everything)
     if app.show_help {
         render_help_overlay(frame, area);
@@ -467,6 +472,11 @@ fn render_anchor_view(frame: &mut Frame, area: Rect, app: &mut App) {
     let first_depth = app.path.anchors.first().map(|a| a.depth).unwrap_or(1.0);
     let dz_bottom_min = app.export_options.dz_bottom_min;
 
+    // Pre-compute zone stats (cached)
+    let anchor_depths: Vec<f64> = app.path.anchors.iter().map(|a| a.depth).collect();
+    let anchor_nlevels: Vec<usize> = app.path.anchors.iter().map(|a| a.nlevels).collect();
+    let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
+
     // Clamp selected index
     if !app.path.anchors.is_empty() {
         app.anchor_selected = app.anchor_selected.min(app.path.anchors.len() - 1);
@@ -481,7 +491,31 @@ fn render_anchor_view(frame: &mut Frame, area: Rect, app: &mut App) {
 
         let is_selected = i == app.anchor_selected;
 
-        // Compute dz stats with truncation
+        // Get stats from pre-computed zone stats (uses mesh if available)
+        let (min_dz, avg_dz, max_dz) = if let Some(stats) = zone_stats.get(i) {
+            (stats.min_dz, stats.avg_dz, stats.max_dz)
+        } else {
+            // Fallback: compute at anchor depth only
+            let truncation = compute_z_with_truncation(
+                anchor.depth,
+                anchor.nlevels,
+                &stretch_params,
+                first_depth,
+                dz_bottom_min,
+                stretching_kind,
+            );
+            let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
+            if !thicknesses.is_empty() {
+                let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = thicknesses.iter().cloned().fold(0.0, f64::max);
+                let avg = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+                (min, avg, max)
+            } else {
+                (anchor.depth, anchor.depth, anchor.depth)
+            }
+        };
+
+        // Compute truncation info for N display
         let truncation = compute_z_with_truncation(
             anchor.depth,
             anchor.nlevels,
@@ -490,16 +524,6 @@ fn render_anchor_view(frame: &mut Frame, area: Rect, app: &mut App) {
             dz_bottom_min,
             stretching_kind,
         );
-        let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
-
-        let (min_dz, avg_dz, max_dz) = if !thicknesses.is_empty() {
-            let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
-            let max = thicknesses.iter().cloned().fold(0.0, f64::max);
-            let avg = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
-            (min, avg, max)
-        } else {
-            (anchor.depth, anchor.depth, anchor.depth)
-        };
 
         // Format N with truncation indicator
         let n_text = if truncation.was_truncated {
@@ -629,9 +653,10 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(desc, Rect::new(inner.x, y, inner.width, 1));
         y += 2;
 
-        // Check if shallow_levels is constrained by min_dz at the first anchor
-        let effective_shallow = mode.preview.first().map(|a| a.nlevels).unwrap_or(mode.params.shallow_levels);
-        let shallow_constrained = effective_shallow < mode.params.shallow_levels;
+        // Compute zone stats early so we can use them for warnings and display
+        let anchor_depths: Vec<f64> = mode.preview.iter().map(|a| a.depth).collect();
+        let anchor_nlevels: Vec<usize> = mode.preview.iter().map(|a| a.nlevels).collect();
+        let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
 
         // Parameters (compact, 2 per line)
         let line1 = Line::from(vec![
@@ -645,38 +670,16 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new(line1), Rect::new(inner.x, y, inner.width, 1));
         y += 1;
 
-        // Show shallow levels with constraint indicator
-        let shallow_style = if shallow_constrained {
-            Style::default().fg(Color::Yellow).bold()
-        } else {
-            Style::default().fg(Color::Cyan).bold()
-        };
-        let shallow_indicator = if shallow_constrained {
-            format!("{:>3}→{}", mode.params.shallow_levels, effective_shallow)
-        } else {
-            format!("{:>3}", mode.params.shallow_levels)
-        };
-
         let line2 = Line::from(vec![
             Span::styled("Shal:", Style::default().fg(Color::White)),
-            Span::styled(shallow_indicator, shallow_style),
+            Span::styled(format!("{:>3}", mode.params.shallow_levels), Style::default().fg(Color::Cyan).bold()),
             Span::styled(" [↑/↓]  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Δz:", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>4.1}m", mode.params.min_dz), Style::default().fg(Color::Cyan).bold()),
+            Span::styled("Δz₀:", Style::default().fg(Color::White)),
+            Span::styled(format!("{:>4.1}m", mode.params.dz_surf), Style::default().fg(Color::Cyan).bold()),
             Span::styled(" [[/]]", Style::default().fg(Color::DarkGray)),
         ]);
         frame.render_widget(Paragraph::new(line2), Rect::new(inner.x, y, inner.width, 1));
         y += 1;
-
-        // Show constraint warning if applicable
-        if shallow_constrained {
-            let first_depth = mode.preview.first().map(|a| a.depth).unwrap_or(0.0);
-            let max_possible = (first_depth / mode.params.min_dz).floor() as usize + 1;
-            let warn = Paragraph::new(format!("  (capped: {:.1}m/{:.1}m = {} max)", first_depth, mode.params.min_dz, max_possible))
-                .style(Style::default().fg(Color::Yellow).italic());
-            frame.render_widget(warn, Rect::new(inner.x, y, inner.width, 1));
-            y += 1;
-        }
 
         // Stretching parameters (affects dz computation)
         let stretch_line = match app.export_options.stretching {
@@ -684,43 +687,62 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("[t]Quad ", Style::default().fg(Color::Green).bold()),
                 Span::styled("a:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.a_vqs0), Style::default().fg(Color::Cyan).bold()),
-                Span::styled(" [a/A]", Style::default().fg(Color::DarkGray)),
+                Span::styled("[a/A]", Style::default().fg(Color::DarkGray)),
+                Span::styled(" ", Style::default()),
+                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
             ]),
             StretchingType::S => Line::from(vec![
                 Span::styled("[t]S ", Style::default().fg(Color::Green).bold()),
                 Span::styled("θf:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_f), Style::default().fg(Color::Cyan).bold()),
-                Span::styled(" [f/F] ", Style::default().fg(Color::DarkGray)),
-                Span::styled("θb:", Style::default().fg(Color::White)),
+                Span::styled("[f/F]", Style::default().fg(Color::DarkGray)),
+                Span::styled(" θb:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
-                Span::styled(" [b/B]", Style::default().fg(Color::DarkGray)),
+                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
+                Span::styled(" ", Style::default()),
+                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
             ]),
             StretchingType::Shchepetkin2005 => Line::from(vec![
                 Span::styled("[t]Shch05 ", Style::default().fg(Color::Green).bold()),
                 Span::styled("θs:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[s/S]", Style::default().fg(Color::DarkGray)),
                 Span::styled(" θb:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
                 Span::styled(" hc:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[h/H]", Style::default().fg(Color::DarkGray)),
+                Span::styled(" ", Style::default()),
+                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
             ]),
             StretchingType::Shchepetkin2010 => Line::from(vec![
                 Span::styled("[t]Shch10 ", Style::default().fg(Color::Green).bold()),
                 Span::styled("θs:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[s/S]", Style::default().fg(Color::DarkGray)),
                 Span::styled(" θb:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
                 Span::styled(" hc:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[h/H]", Style::default().fg(Color::DarkGray)),
+                Span::styled(" ", Style::default()),
+                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
             ]),
             StretchingType::Geyer => Line::from(vec![
                 Span::styled("[t]Geyer ", Style::default().fg(Color::Green).bold()),
                 Span::styled("θs:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[s/S]", Style::default().fg(Color::DarkGray)),
                 Span::styled(" θb:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
                 Span::styled(" hc:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
+                Span::styled("[h/H]", Style::default().fg(Color::DarkGray)),
+                Span::styled(" ", Style::default()),
+                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
             ]),
         };
         frame.render_widget(Paragraph::new(stretch_line), Rect::new(inner.x, y, inner.width, 1));
@@ -764,14 +786,40 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
         let first_depth = mode.preview.first().map(|a| a.depth).unwrap_or(1.0);
         let dz_bottom_min = app.export_options.dz_bottom_min;
 
+        // zone_stats already computed earlier for warning check (and cached)
+
         // Preview anchors with bottom truncation
         let footer_y = inner.y + inner.height - 1;
-        for anchor in &mode.preview {
+        for (i, anchor) in mode.preview.iter().enumerate() {
             if y >= footer_y {
                 break;
             }
 
-            // Compute z-coordinates with bottom truncation applied
+            // Get stats from pre-computed zone stats (uses mesh if available)
+            let (min_dz, avg_dz, max_dz) = if let Some(stats) = zone_stats.get(i) {
+                (stats.min_dz, stats.avg_dz, stats.max_dz)
+            } else {
+                // Fallback: compute at anchor depth only
+                let truncation = compute_z_with_truncation(
+                    anchor.depth,
+                    anchor.nlevels,
+                    &stretch_params,
+                    first_depth,
+                    dz_bottom_min,
+                    stretching_kind,
+                );
+                let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
+                if !thicknesses.is_empty() {
+                    let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+                    let max = thicknesses.iter().cloned().fold(0.0, f64::max);
+                    let avg = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+                    (min, avg, max)
+                } else {
+                    (anchor.depth, anchor.depth, anchor.depth)
+                }
+            };
+
+            // Compute truncation info for N display
             let truncation = compute_z_with_truncation(
                 anchor.depth,
                 anchor.nlevels,
@@ -780,17 +828,6 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
                 dz_bottom_min,
                 stretching_kind,
             );
-
-            let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
-
-            let (min_dz, avg_dz, max_dz) = if !thicknesses.is_empty() {
-                let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max = thicknesses.iter().cloned().fold(0.0, f64::max);
-                let avg = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
-                (min, avg, max)
-            } else {
-                (anchor.depth, anchor.depth, anchor.depth)
-            };
 
             // Show N→actual if truncated, otherwise just N
             let (n_text, n_style) = if truncation.was_truncated {
@@ -949,15 +986,20 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
    Esc              Cancel
 
  STRETCHING (right panel)
-   s / q            S-transform / Quadratic
-   f / F            Increase / decrease θf
+   t                Cycle transform type (Quad/S/Shch05/Shch10/Geyer)
+   i                Show transform info & parameters help
+   f / F            Increase / decrease θf (S-transform)
    b / B            Increase / decrease θb
+   s / S            Increase / decrease θs (ROMS transforms)
+   h / H            Increase / decrease hc (ROMS transforms)
+   a / A            Increase / decrease a_vqs0 (Quadratic)
 
  EXPORT
    e                Open export dialog
 
  OTHER
    ? / F1           Toggle this help
+   i                Toggle transform help
    q                Quit application
 "#;
 
@@ -973,4 +1015,238 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
         );
 
     frame.render_widget(help, popup_area);
+}
+
+/// Render the transform help overlay with information about the current stretching function
+fn render_transform_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
+    // Center the help popup
+    let popup_width = 72u16;
+    let popup_height = 32u16;
+    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    let (title, help_text) = match app.export_options.stretching {
+        StretchingType::Quadratic => (
+            " Quadratic Transform ",
+            r#"
+ QUADRATIC STRETCHING FUNCTION
+
+ Description:
+   Simple quadratic vertical coordinate transformation. Provides basic
+   control over layer distribution with minimal parameters.
+
+ Best for:
+   • Quick testing and simple applications
+   • Uniform or nearly-uniform layer distributions
+   • Cases where computational simplicity is preferred
+
+ Parameters:
+   a_vqs0 [-1, 1]    Stretching amplitude
+                     • -1: Focus resolution at bottom (thinner bottom layers)
+                     •  0: Uniform layer distribution
+                     • +1: Focus resolution at surface (thinner surface layers)
+
+ Keyboard:
+   a / A             Decrease / increase a_vqs0 by 0.1
+   t                 Cycle to next transform type
+
+ Typical values:
+   a_vqs0 = -1.0     Bottom-focused (good for benthic processes)
+   a_vqs0 =  0.0     Uniform (general purpose)
+"#,
+        ),
+        StretchingType::S => (
+            " S-Transform (SCHISM Default) ",
+            r#"
+ S-TRANSFORM STRETCHING FUNCTION
+
+ Description:
+   SCHISM's native S-coordinate transformation using sinh/tanh functions.
+   Provides smooth layer distribution with good control over surface and
+   bottom resolution.
+
+ Best for:
+   • General SCHISM applications
+   • Estuarine and coastal modeling
+   • Cases requiring balanced surface/bottom resolution
+
+ Parameters:
+   θf (theta_f) [0.1, 20]   Surface/bottom focusing intensity
+                            • Higher = sharper transition, more concentrated layers
+                            • Lower = smoother, more gradual distribution
+                            • Typical: 3-5
+
+   θb (theta_b) [0, 1]      Bottom layer focusing weight
+                            • 0: Pure surface focusing
+                            • 1: Maximum bottom focusing
+                            • Typical: 0.5 (balanced)
+
+ Keyboard:
+   f / F             Decrease / increase θf by 0.5
+   b / B             Decrease / increase θb by 0.1
+   t                 Cycle to next transform type
+
+ Typical values:
+   θf=3.0, θb=0.5    Balanced resolution (default)
+   θf=5.0, θb=0.8    Enhanced bottom resolution
+"#,
+        ),
+        StretchingType::Shchepetkin2005 => (
+            " Shchepetkin 2005 (ROMS) ",
+            r#"
+ SHCHEPETKIN 2005 STRETCHING (vstretching=2)
+
+ Reference:
+   Shchepetkin, A.F. and J.C. McWilliams, 2005. The Regional Oceanic
+   Modeling System (ROMS): A split-explicit, free-surface, topography-
+   following-coordinate oceanic model.
+
+ Description:
+   Original UCLA-ROMS stretching function. Uses cosh/sinh functions for
+   smooth transitions. Good general-purpose choice for ocean modeling.
+
+ Best for:
+   • Legacy ROMS compatibility
+   • General ocean modeling
+   • Moderate depth ranges (shelf to slope)
+
+ Parameters:
+   θs (theta_s) [0, 10]     Surface control parameter
+                            • Higher = more surface resolution
+                            • Typical: 5-7
+
+   θb (theta_b) [0, 4]      Bottom control parameter
+                            • Higher = more bottom resolution
+                            • Typical: 0.4-2
+
+   hc [1, 100] meters       Critical depth (stretching transition width)
+                            • Controls where stretching transitions
+                            • Smaller = sharper transition near surface
+                            • Typical: 5-20m
+
+ Keyboard:
+   s / S             Decrease / increase θs by 0.5
+   b / B             Decrease / increase θb by 0.1
+   h / H             Decrease / increase hc by 1m
+   t                 Cycle to next transform type
+"#,
+        ),
+        StretchingType::Shchepetkin2010 => (
+            " Shchepetkin 2010 (ROMS Double) ",
+            r#"
+ SHCHEPETKIN 2010 DOUBLE STRETCHING (vstretching=4)
+
+ Reference:
+   Shchepetkin, A.F., 2010. UCLA-ROMS User Manual.
+
+ Description:
+   Enhanced "double stretching" function that applies stretching twice
+   for improved control. Provides better resolution at both surface AND
+   bottom simultaneously.
+
+ Best for:
+   • Deep ocean applications
+   • Cases needing both surface and bottom resolution
+   • Thermocline/pycnocline studies
+   • When Shchepetkin2005 doesn't provide enough control
+
+ Parameters:
+   θs (theta_s) [0, 10]     Surface stretching parameter
+                            • Controls surface layer compression
+                            • Higher = thinner surface layers
+                            • Typical: 5-7
+
+   θb (theta_b) [0, 4]      Bottom stretching parameter
+                            • Controls bottom layer compression
+                            • Higher = thinner bottom layers
+                            • Typical: 0.4-2
+
+   hc [1, 100] meters       Critical depth
+                            • Defines the surface layer thickness scale
+                            • Typical: 5-50m depending on application
+
+ Keyboard:
+   s / S             Decrease / increase θs by 0.5
+   b / B             Decrease / increase θb by 0.1
+   h / H             Decrease / increase hc by 1m
+   t                 Cycle to next transform type
+"#,
+        ),
+        StretchingType::Geyer => (
+            " Geyer (Bottom Boundary Layer) ",
+            r#"
+ R. GEYER STRETCHING FUNCTION (vstretching=3)
+
+ Reference:
+   R. Geyer stretching function for enhanced bottom boundary layer
+   resolution in shallow coastal and estuarine applications.
+
+ Description:
+   Specialized stretching designed for high-resolution bottom boundary
+   layer studies. Uses log-cosh functions with a fixed HSCALE=3.0 to
+   create very fine resolution near the seabed.
+
+ Best for:
+   • Shallow coastal and estuarine modeling
+   • Bottom boundary layer studies
+   • Sediment transport modeling
+   • Benthic ecosystem studies
+   • Tidal flats and shallow embayments
+
+ Parameters:
+   θs (theta_s) [0, 10]     Surface exponent
+                            • Controls surface layer distribution
+                            • Lower values = more uniform near surface
+                            • Typical: 1-3
+
+   θb (theta_b) [0, 4]      Bottom exponent
+                            • Controls bottom layer concentration
+                            • Higher = more resolution at seabed
+                            • Typical: 1-3
+
+   hc [1, 100] meters       Critical depth
+                            • Sets the transition scale
+                            • Typically smaller for shallow applications
+                            • Typical: 3-10m
+
+ Keyboard:
+   s / S             Decrease / increase θs by 0.5
+   b / B             Decrease / increase θb by 0.1
+   h / H             Decrease / increase hc by 1m
+   t                 Cycle to next transform type
+
+ Note: This transform produces very thin bottom layers. Ensure your
+ dz_bottom_min setting is appropriate for your timestep.
+"#,
+        ),
+    };
+
+    let help = Paragraph::new(help_text)
+        .style(Style::default().fg(Color::White))
+        .block(
+            Block::default()
+                .title(title)
+                .title_style(Style::default().fg(Color::Cyan).bold())
+                .borders(Borders::ALL)
+                .border_style(Style::default().fg(Color::Cyan))
+                .style(Style::default().bg(Color::Black)),
+        );
+
+    frame.render_widget(help, popup_area);
+
+    // Render close hint at bottom
+    let hint = Paragraph::new(" Press [i] or [Esc] to close ")
+        .style(Style::default().fg(Color::Yellow))
+        .alignment(Alignment::Center);
+    let hint_area = Rect::new(
+        popup_area.x,
+        popup_area.y + popup_area.height - 1,
+        popup_area.width,
+        1,
+    );
+    frame.render_widget(hint, hint_area);
 }

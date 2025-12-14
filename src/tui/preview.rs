@@ -9,7 +9,6 @@ use ratatui::{
 };
 
 use super::app::{App, Focus, StretchingType};
-use super::stretching::compute_path_zone_stats;
 
 /// Render the path preview panel with scrollable anchor list
 pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
@@ -79,11 +78,9 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
             .style(Style::default().fg(Color::DarkGray));
         frame.render_widget(hint2, Rect::new(inner.x, y, inner.width, 1));
     } else {
-        // Compute zone stats with stretching
+        // Compute zone stats with stretching (cached)
         let (depths, nlevels) = app.path.to_hsm_config();
-        let params = app.get_stretching_params();
-        let stretching = app.get_stretching_kind();
-        let zone_stats = compute_path_zone_stats(&depths, &nlevels, &params, stretching);
+        let zone_stats = app.get_cached_zone_stats(&depths, &nlevels);
 
         // Apply scroll offset
         let scroll_offset = app.preview_scroll.min(anchor_count.saturating_sub(1));
@@ -202,7 +199,8 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
     let stretch_line = Paragraph::new(Line::from(vec![
         Span::styled("[t]", Style::default().fg(Color::DarkGray)),
         Span::styled(stretch_info, Style::default().fg(Color::Cyan)),
-        Span::styled(format!(" {}", param_hint), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {} ", param_hint), Style::default().fg(Color::DarkGray)),
+        Span::styled("[i]?", Style::default().fg(Color::Yellow)),
     ]));
     frame.render_widget(stretch_line, Rect::new(inner.x, fy, inner.width, 1));
     fy += 1;

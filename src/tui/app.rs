@@ -126,6 +126,36 @@ pub struct App {
 
     /// Pending overwrite confirmation (shows confirm dialog)
     pub pending_overwrite: bool,
+
+    /// Whether to show transform help overlay
+    pub show_transform_help: bool,
+
+    /// Cached zone stats to avoid expensive recomputation every frame
+    /// Uses RefCell for interior mutability during rendering
+    pub cached_zone_stats: std::cell::RefCell<Option<CachedZoneStats>>,
+}
+
+/// Cached zone statistics with invalidation key
+#[derive(Clone, Debug)]
+pub struct CachedZoneStats {
+    /// The computed zone stats
+    pub stats: Vec<super::stretching::ZoneStats>,
+    /// Cache key: anchor depths
+    pub anchor_depths: Vec<f64>,
+    /// Cache key: anchor nlevels
+    pub anchor_nlevels: Vec<usize>,
+    /// Cache key: stretching type
+    pub stretching: StretchingType,
+    /// Cache key: theta_f
+    pub theta_f: f64,
+    /// Cache key: theta_b
+    pub theta_b: f64,
+    /// Cache key: theta_s
+    pub theta_s: f64,
+    /// Cache key: hc
+    pub hc: f64,
+    /// Cache key: a_vqs0
+    pub a_vqs0: f64,
 }
 
 /// Which panel has focus
@@ -283,6 +313,8 @@ impl App {
             anchor_input: String::new(),
             anchor_pending_depth: None,
             pending_overwrite: false,
+            show_transform_help: false,
+            cached_zone_stats: std::cell::RefCell::new(None),
         };
 
         // Compute initial suggestions if in suggestion mode
@@ -338,6 +370,8 @@ impl App {
             anchor_input: String::new(),
             anchor_pending_depth: None,
             pending_overwrite: false,
+            show_transform_help: false,
+            cached_zone_stats: std::cell::RefCell::new(None),
         };
 
         // Compute initial suggestions if in suggestion mode
@@ -455,6 +489,15 @@ impl App {
             }
             KeyCode::Esc if self.show_help => {
                 self.show_help = false;
+                return;
+            }
+            // Transform info: 'i' toggles transform help overlay
+            KeyCode::Char('i') if !matches!(self.table.edit_mode, EditMode::AddRow | EditMode::AddColumn) => {
+                self.show_transform_help = !self.show_transform_help;
+                return;
+            }
+            KeyCode::Esc if self.show_transform_help => {
+                self.show_transform_help = false;
                 return;
             }
             // Panel resize: { shrinks table, } expands table
@@ -1347,21 +1390,21 @@ impl App {
                 }
             }
 
-            // Adjust min_dz
+            // Adjust dz_surf (target surface layer thickness)
             KeyCode::Char(']') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_min_dz(0.1);
+                    mode.adjust_dz_surf(0.1);
                     needs_recompute = true;
-                    Some((format!("Min dz: {:.1}m", mode.params.min_dz), StatusLevel::Info))
+                    Some((format!("Δz₀: {:.1}m", mode.params.dz_surf), StatusLevel::Info))
                 } else {
                     None
                 }
             }
             KeyCode::Char('[') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_min_dz(-0.1);
+                    mode.adjust_dz_surf(-0.1);
                     needs_recompute = true;
-                    Some((format!("Min dz: {:.1}m", mode.params.min_dz), StatusLevel::Info))
+                    Some((format!("Δz₀: {:.1}m", mode.params.dz_surf), StatusLevel::Info))
                 } else {
                     None
                 }
@@ -1573,6 +1616,64 @@ impl App {
             StretchingType::Shchepetkin2010 => StretchingKind::Shchepetkin2010,
             StretchingType::Geyer => StretchingKind::Geyer,
         }
+    }
+
+    /// Get zone stats with caching - avoids expensive recomputation on every frame
+    /// Uses interior mutability (RefCell) so it can be called during rendering with &self
+    pub fn get_cached_zone_stats(
+        &self,
+        anchor_depths: &[f64],
+        anchor_nlevels: &[usize],
+    ) -> Vec<super::stretching::ZoneStats> {
+        use super::stretching::{compute_mesh_zone_stats, compute_path_zone_stats};
+
+        // Check if cache is valid
+        let cache_valid = {
+            let cache_ref = self.cached_zone_stats.borrow();
+            if let Some(ref cache) = *cache_ref {
+                cache.anchor_depths == anchor_depths
+                    && cache.anchor_nlevels == anchor_nlevels
+                    && cache.stretching == self.export_options.stretching
+                    && (cache.theta_f - self.export_options.theta_f).abs() < 0.001
+                    && (cache.theta_b - self.export_options.theta_b).abs() < 0.001
+                    && (cache.theta_s - self.export_options.theta_s).abs() < 0.001
+                    && (cache.hc - self.export_options.hc).abs() < 0.001
+                    && (cache.a_vqs0 - self.export_options.a_vqs0).abs() < 0.001
+            } else {
+                false
+            }
+        };
+
+        if cache_valid {
+            let cache_ref = self.cached_zone_stats.borrow();
+            return cache_ref.as_ref().unwrap().stats.clone();
+        }
+
+        // Compute new stats
+        let params = self.get_stretching_params();
+        let stretching = self.get_stretching_kind();
+
+        let stats = if let Some(mesh) = &self.mesh_info {
+            let mesh_depths: Vec<f64> = mesh.hgrid.depths_positive_down().to_vec();
+            compute_mesh_zone_stats(anchor_depths, anchor_nlevels, &mesh_depths, &params, stretching)
+        } else {
+            compute_path_zone_stats(anchor_depths, anchor_nlevels, &params, stretching)
+        };
+
+        // Cache the result
+        *self.cached_zone_stats.borrow_mut() = Some(CachedZoneStats {
+            stats: stats.clone(),
+            anchor_depths: anchor_depths.to_vec(),
+            anchor_nlevels: anchor_nlevels.to_vec(),
+            stretching: self.export_options.stretching.clone(),
+            theta_f: self.export_options.theta_f,
+            theta_b: self.export_options.theta_b,
+            theta_s: self.export_options.theta_s,
+            hc: self.export_options.hc,
+            a_vqs0: self.export_options.a_vqs0,
+        });
+
+        stats
     }
 
     /// Convert mouse coordinates to table cell indices

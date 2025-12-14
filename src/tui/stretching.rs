@@ -4,6 +4,7 @@
 //! various stretching functions: S-transform, Quadratic, and ROMS variants.
 
 use libm::{cosh, exp, log, sinh, tanh};
+use rayon::prelude::*;
 
 /// Parameters for stretching functions
 #[derive(Clone, Debug)]
@@ -382,7 +383,7 @@ pub fn compute_z_with_truncation(
     apply_bottom_truncation(&z_coords, depth, dz_bottom_min)
 }
 
-/// Compute statistics for all zones in a path
+/// Compute statistics for all zones in a path (at anchor depths only - for display without mesh)
 pub fn compute_path_zone_stats(
     depths: &[f64],
     nlevels: &[usize],
@@ -425,6 +426,173 @@ pub fn compute_path_zone_stats(
     }
 
     zones
+}
+
+/// Interpolate nlevels for a given depth based on anchor depths and nlevels
+fn interpolate_nlevels(node_depth: f64, anchor_depths: &[f64], anchor_nlevels: &[usize]) -> usize {
+    if anchor_depths.is_empty() || anchor_nlevels.is_empty() {
+        return 2;
+    }
+
+    // If shallower than first anchor, use first anchor's nlevels
+    if node_depth <= anchor_depths[0] {
+        return anchor_nlevels[0];
+    }
+
+    // If deeper than last anchor, use last anchor's nlevels
+    if node_depth >= *anchor_depths.last().unwrap() {
+        return *anchor_nlevels.last().unwrap();
+    }
+
+    // Find the zone this depth falls into and interpolate
+    for i in 1..anchor_depths.len() {
+        if node_depth <= anchor_depths[i] {
+            let d0 = anchor_depths[i - 1];
+            let d1 = anchor_depths[i];
+            let n0 = anchor_nlevels[i - 1] as f64;
+            let n1 = anchor_nlevels[i] as f64;
+
+            // Linear interpolation
+            let t = (node_depth - d0) / (d1 - d0);
+            let interpolated = n0 + t * (n1 - n0);
+            return interpolated.round() as usize;
+        }
+    }
+
+    *anchor_nlevels.last().unwrap()
+}
+
+/// Per-node statistics for parallel reduction
+#[derive(Clone, Default)]
+struct NodeStats {
+    min_dz: f64,
+    max_dz: f64,
+    dz_sum: f64,
+    dz_count: usize,
+    node_count: usize,
+}
+
+impl NodeStats {
+    fn new() -> Self {
+        Self {
+            min_dz: f64::INFINITY,
+            max_dz: 0.0,
+            dz_sum: 0.0,
+            dz_count: 0,
+            node_count: 0,
+        }
+    }
+
+    fn merge(mut self, other: Self) -> Self {
+        self.min_dz = self.min_dz.min(other.min_dz);
+        self.max_dz = self.max_dz.max(other.max_dz);
+        self.dz_sum += other.dz_sum;
+        self.dz_count += other.dz_count;
+        self.node_count += other.node_count;
+        self
+    }
+}
+
+/// Compute statistics using actual mesh node depths (parallelized with rayon)
+///
+/// This provides accurate min/avg/max layer thicknesses across real mesh nodes,
+/// rather than just at anchor depths.
+pub fn compute_mesh_zone_stats(
+    anchor_depths: &[f64],
+    anchor_nlevels: &[usize],
+    mesh_depths: &[f64],
+    params: &StretchingParams,
+    stretching: StretchingKind,
+) -> Vec<ZoneStats> {
+    if anchor_depths.is_empty() || anchor_nlevels.is_empty() || mesh_depths.is_empty() {
+        return vec![];
+    }
+
+    let first_anchor_depth = anchor_depths[0];
+
+    // Process each anchor/zone
+    anchor_depths
+        .iter()
+        .zip(anchor_nlevels.iter())
+        .enumerate()
+        .map(|(i, (&anchor_depth, &anchor_nlev))| {
+            let depth_start = if i == 0 { 0.0 } else { anchor_depths[i - 1] };
+            let depth_end = anchor_depth;
+
+            // Parallel computation across all mesh nodes for this zone
+            let stats = mesh_depths
+                .par_iter()
+                .filter(|&&node_depth| {
+                    if i == 0 {
+                        node_depth > 0.0 && node_depth <= depth_end
+                    } else {
+                        node_depth > depth_start && node_depth <= depth_end
+                    }
+                })
+                .fold(NodeStats::new, |mut acc, &node_depth| {
+                    acc.node_count += 1;
+
+                    // Interpolate nlevels for this node's depth
+                    let node_nlevels = interpolate_nlevels(node_depth, anchor_depths, anchor_nlevels);
+
+                    // Compute z-coordinates at this node's actual depth
+                    let z_coords = compute_z_for_stretching(
+                        node_depth,
+                        node_nlevels,
+                        params,
+                        first_anchor_depth,
+                        stretching,
+                    );
+
+                    let thicknesses = compute_layer_thicknesses(&z_coords);
+
+                    for &dz in &thicknesses {
+                        acc.min_dz = acc.min_dz.min(dz);
+                        acc.max_dz = acc.max_dz.max(dz);
+                        acc.dz_sum += dz;
+                        acc.dz_count += 1;
+                    }
+
+                    acc
+                })
+                .reduce(NodeStats::new, NodeStats::merge);
+
+            // If no nodes in zone, fall back to anchor-based calculation
+            let (min_dz, avg_dz, max_dz, thicknesses) = if stats.dz_count > 0 {
+                (
+                    stats.min_dz,
+                    stats.dz_sum / stats.dz_count as f64,
+                    stats.max_dz,
+                    vec![], // Don't store all thicknesses for mesh stats
+                )
+            } else {
+                // Fallback: compute at anchor depth
+                let z_coords = compute_z_for_stretching(
+                    anchor_depth,
+                    anchor_nlev,
+                    params,
+                    first_anchor_depth,
+                    stretching,
+                );
+                let thicknesses = compute_layer_thicknesses(&z_coords);
+                let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+                let max = thicknesses.iter().cloned().fold(0.0, f64::max);
+                let avg = thicknesses.iter().sum::<f64>() / thicknesses.len().max(1) as f64;
+                (min, avg, max, thicknesses)
+            };
+
+            ZoneStats {
+                name: format!("Zone {} ({} nodes)", i + 1, stats.node_count),
+                depth_start,
+                depth_end,
+                num_levels: anchor_nlev,
+                min_dz,
+                max_dz,
+                avg_dz,
+                layer_thicknesses: thicknesses,
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

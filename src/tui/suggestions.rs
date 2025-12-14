@@ -18,8 +18,9 @@ pub struct Anchor {
 pub struct SuggestionParams {
     /// Total vertical levels desired at deepest point
     pub target_levels: usize,
-    /// Minimum layer thickness constraint
-    pub min_dz: f64,
+    /// Target surface layer thickness - controls first anchor depth
+    /// and serves as the reference for surface resolution
+    pub dz_surf: f64,
     /// Number of anchor points to generate
     pub num_anchors: usize,
     /// Minimum levels at shallowest anchor
@@ -30,7 +31,7 @@ impl Default for SuggestionParams {
     fn default() -> Self {
         Self {
             target_levels: 30,
-            min_dz: 0.5,
+            dz_surf: 0.5,
             num_anchors: 4,
             shallow_levels: 2,
         }
@@ -117,7 +118,8 @@ impl SuggestionAlgorithm {
 
 /// Exponential distribution algorithm
 /// - Depths are spaced exponentially (finer near surface)
-/// - Levels are computed to respect min_dz constraint
+/// - Levels are assigned based on shallow_levels to target_levels range
+/// - dz_surf controls the first anchor depth (surface layer thickness target)
 fn suggest_exponential(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor> {
     let n = params.num_anchors;
     if n < 2 {
@@ -127,14 +129,17 @@ fn suggest_exponential(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor
         }];
     }
 
-    // Generate exponentially-spaced depths
-    let start = params.min_dz.max(mesh.min_depth).max(0.1);
+    // First anchor depth is dz_surf (but not shallower than mesh minimum)
+    // dz_surf represents the target surface layer thickness
+    let start = params.dz_surf.max(mesh.min_depth).max(0.1);
     let end = mesh.max_depth;
     let scale = (end / start).powf(1.0 / (n as f64 - 1.0));
 
     let depths: Vec<f64> = (0..n).map(|i| start * scale.powf(i as f64)).collect();
 
-    // Compute levels using exponential function with min_dz constraint
+    // Compute levels using exponential distribution from shallow_levels to target_levels
+    // No capping here - let the user see the configuration they asked for,
+    // and show warnings in the preview if layer thicknesses exceed constraints
     let level_range = params.target_levels - params.shallow_levels;
     let mut anchors: Vec<Anchor> = depths
         .iter()
@@ -146,11 +151,7 @@ fn suggest_exponential(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor
             } else {
                 1.0
             };
-            let mut nlevels = params.shallow_levels + (frac * level_range as f64).round() as usize;
-
-            // Apply min_dz constraint: N <= depth / min_dz + 1
-            let max_levels = (depth / params.min_dz).floor() as usize + 1;
-            nlevels = nlevels.min(max_levels);
+            let nlevels = params.shallow_levels + (frac * level_range as f64).round() as usize;
 
             Anchor { depth, nlevels }
         })
@@ -164,6 +165,7 @@ fn suggest_exponential(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor
 
 /// Uniform distribution algorithm
 /// - Linear spacing in both depth and levels
+/// - First anchor at dz_surf, last at max_depth
 fn suggest_uniform(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor> {
     let n = params.num_anchors;
     if n < 2 {
@@ -173,12 +175,15 @@ fn suggest_uniform(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor> {
         }];
     }
 
-    let depth_step = mesh.max_depth / n as f64;
+    // First anchor depth is dz_surf (but not shallower than mesh minimum)
+    let start = params.dz_surf.max(mesh.min_depth).max(0.1);
+    let end = mesh.max_depth;
+    let depth_step = (end - start) / (n - 1) as f64;
     let level_step = (params.target_levels - params.shallow_levels) as f64 / (n - 1) as f64;
 
     let mut anchors: Vec<Anchor> = (0..n)
         .map(|i| Anchor {
-            depth: (i + 1) as f64 * depth_step,
+            depth: start + i as f64 * depth_step,
             nlevels: params.shallow_levels + (i as f64 * level_step).round() as usize,
         })
         .collect();
@@ -282,10 +287,10 @@ impl SuggestionMode {
         self.params.target_levels = new_val.max(self.params.shallow_levels + 1);
     }
 
-    /// Adjust min_dz
-    pub fn adjust_min_dz(&mut self, delta: f64) {
-        let new_val = (self.params.min_dz + delta).max(0.1);
-        self.params.min_dz = new_val;
+    /// Adjust dz_surf (target surface layer thickness)
+    pub fn adjust_dz_surf(&mut self, delta: f64) {
+        let new_val = (self.params.dz_surf + delta).max(0.1);
+        self.params.dz_surf = new_val;
     }
 
     /// Adjust number of anchors
@@ -362,7 +367,7 @@ mod tests {
     fn test_suggestion_params_defaults() {
         let params = SuggestionParams::default();
         assert_eq!(params.target_levels, 30);
-        assert_eq!(params.min_dz, 0.5);
+        assert_eq!(params.dz_surf, 0.5);
         assert_eq!(params.num_anchors, 4);
         assert_eq!(params.shallow_levels, 2);
     }
