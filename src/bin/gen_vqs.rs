@@ -1,8 +1,11 @@
 use clap::{Parser, ValueEnum};
 use pretty_env_logger;
 use schismrs_hgrid::hgrid::Hgrid;
+use schismrs_vgrid::transforms::geyer::GeyerOpts;
 use schismrs_vgrid::transforms::quadratic::QuadraticTransformOpts;
 use schismrs_vgrid::transforms::s::STransformOpts;
+use schismrs_vgrid::transforms::shchepetkin2005::Shchepetkin2005Opts;
+use schismrs_vgrid::transforms::shchepetkin2010::Shchepetkin2010Opts;
 use schismrs_vgrid::transforms::StretchingFunction;
 use schismrs_vgrid::vqs::VQSBuilder;
 use std::process::ExitCode;
@@ -55,6 +58,16 @@ struct Cli {
     #[clap(long, default_value = "0.5")]
     theta_b: Option<f64>,
 
+    /// ROMS theta_s: surface stretching parameter (0-10)
+    /// Used by Shchepetkin2005, Shchepetkin2010, and Geyer transforms
+    #[clap(long, default_value = "5.0")]
+    theta_s: Option<f64>,
+
+    /// ROMS hc: critical depth in meters (>0)
+    /// Used by Shchepetkin2005, Shchepetkin2010, and Geyer transforms
+    #[clap(long, default_value = "5.0")]
+    hc: Option<f64>,
+
     /// Minimum bottom layer thickness in meters
     #[clap(long, default_value = "0.3")]
     dz_bottom_min: Option<f64>,
@@ -73,6 +86,12 @@ enum StretchingFunctionKind {
     Quadratic,
     #[default]
     S,
+    /// Shchepetkin (2005) UCLA-ROMS stretching
+    Shchepetkin2005,
+    /// Shchepetkin (2010) UCLA-ROMS double stretching
+    Shchepetkin2010,
+    /// R. Geyer stretching for high bottom boundary layer resolution
+    Geyer,
 }
 
 fn entrypoint() -> Result<(), Box<dyn Error>> {
@@ -108,6 +127,36 @@ fn entrypoint() -> Result<(), Box<dyn Error>> {
                 theta_f: cli.theta_f.as_ref().unwrap(),
             };
             StretchingFunction::S(s_opts)
+        }
+        StretchingFunctionKind::Shchepetkin2005 => {
+            let opts = Shchepetkin2005Opts::new(
+                cli.etal.as_ref().unwrap(),
+                cli.a_vqs0.as_ref().unwrap(),
+                cli.theta_s.as_ref().unwrap(),
+                cli.theta_b.as_ref().unwrap(),
+                cli.hc.as_ref().unwrap(),
+            );
+            StretchingFunction::Shchepetkin2005(opts)
+        }
+        StretchingFunctionKind::Shchepetkin2010 => {
+            let opts = Shchepetkin2010Opts::new(
+                cli.etal.as_ref().unwrap(),
+                cli.a_vqs0.as_ref().unwrap(),
+                cli.theta_s.as_ref().unwrap(),
+                cli.theta_b.as_ref().unwrap(),
+                cli.hc.as_ref().unwrap(),
+            );
+            StretchingFunction::Shchepetkin2010(opts)
+        }
+        StretchingFunctionKind::Geyer => {
+            let opts = GeyerOpts::new(
+                cli.etal.as_ref().unwrap(),
+                cli.a_vqs0.as_ref().unwrap(),
+                cli.theta_s.as_ref().unwrap(),
+                cli.theta_b.as_ref().unwrap(),
+                cli.hc.as_ref().unwrap(),
+            );
+            StretchingFunction::Geyer(opts)
         }
     };
 

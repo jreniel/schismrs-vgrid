@@ -82,8 +82,8 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
         // Compute zone stats with stretching
         let (depths, nlevels) = app.path.to_hsm_config();
         let params = app.get_stretching_params();
-        let use_s_transform = app.export_options.stretching == StretchingType::S;
-        let zone_stats = compute_path_zone_stats(&depths, &nlevels, &params, use_s_transform);
+        let stretching = app.get_stretching_kind();
+        let zone_stats = compute_path_zone_stats(&depths, &nlevels, &params, stretching);
 
         // Apply scroll offset
         let scroll_offset = app.preview_scroll.min(anchor_count.saturating_sub(1));
@@ -176,16 +176,33 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
     frame.render_widget(sep2, Rect::new(inner.x, fy, inner.width, 1));
     fy += 1;
 
-    // Stretching info
-    let is_quadratic = matches!(app.export_options.stretching, StretchingType::Quadratic);
-    let stretch_info = if is_quadratic {
-        format!("[q]Quad a={:.1}", app.export_options.a_vqs0)
-    } else {
-        format!("[s]S θf={:.1} θb={:.1}", app.export_options.theta_f, app.export_options.theta_b)
+    // Stretching info - show relevant parameters for each transform type
+    let (stretch_info, param_hint) = match app.export_options.stretching {
+        StretchingType::Quadratic => (
+            format!("Quad a={:.1}", app.export_options.a_vqs0),
+            "[a/A]",
+        ),
+        StretchingType::S => (
+            format!("S θf={:.1} θb={:.1}", app.export_options.theta_f, app.export_options.theta_b),
+            "[f/F b/B]",
+        ),
+        StretchingType::Shchepetkin2005 => (
+            format!("Shch05 θs={:.1} θb={:.1} hc={:.0}", app.export_options.theta_s, app.export_options.theta_b, app.export_options.hc),
+            "[s/S b/B h/H]",
+        ),
+        StretchingType::Shchepetkin2010 => (
+            format!("Shch10 θs={:.1} θb={:.1} hc={:.0}", app.export_options.theta_s, app.export_options.theta_b, app.export_options.hc),
+            "[s/S b/B h/H]",
+        ),
+        StretchingType::Geyer => (
+            format!("Geyer θs={:.1} θb={:.1} hc={:.0}", app.export_options.theta_s, app.export_options.theta_b, app.export_options.hc),
+            "[s/S b/B h/H]",
+        ),
     };
     let stretch_line = Paragraph::new(Line::from(vec![
+        Span::styled("[t]", Style::default().fg(Color::DarkGray)),
         Span::styled(stretch_info, Style::default().fg(Color::Cyan)),
-        Span::styled("  [f/F b/B v/V]", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {}", param_hint), Style::default().fg(Color::DarkGray)),
     ]));
     frame.render_widget(stretch_line, Rect::new(inner.x, fy, inner.width, 1));
     fy += 1;

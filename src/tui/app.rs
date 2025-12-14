@@ -13,8 +13,11 @@ use super::path::PathSelection;
 use super::stretching::StretchingParams;
 use super::table::{ConstructionTable, EditMode};
 
+use crate::transforms::geyer::GeyerOpts;
 use crate::transforms::quadratic::QuadraticTransformOpts;
 use crate::transforms::s::STransformOpts;
+use crate::transforms::shchepetkin2005::Shchepetkin2005Opts;
+use crate::transforms::shchepetkin2010::Shchepetkin2010Opts;
 use crate::transforms::StretchingFunction;
 use crate::vqs::VQSBuilder;
 
@@ -159,8 +162,14 @@ pub enum StatusLevel {
 pub struct ExportOptions {
     pub stretching: StretchingType,
     pub a_vqs0: f64,
+    /// S-transform theta_f: surface/bottom focusing intensity (0.1-20)
     pub theta_f: f64,
+    /// S-transform theta_b: bottom layer focusing weight (0-1)
     pub theta_b: f64,
+    /// ROMS theta_s: surface stretching parameter (0-10)
+    pub theta_s: f64,
+    /// ROMS hc: critical depth in meters (>0) - controls stretching transition width
+    pub hc: f64,
     /// Minimum bottom layer thickness - prevents thin slivers at seabed
     pub dz_bottom_min: f64,
     pub output_format: OutputFormat,
@@ -169,8 +178,16 @@ pub struct ExportOptions {
 /// Stretching function type
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StretchingType {
+    /// Quadratic stretching (simple, fast)
     Quadratic,
+    /// S-transform (SCHISM default)
     S,
+    /// Shchepetkin (2005) UCLA-ROMS stretching
+    Shchepetkin2005,
+    /// Shchepetkin (2010) UCLA-ROMS double stretching
+    Shchepetkin2010,
+    /// R. Geyer stretching for high bottom boundary layer resolution
+    Geyer,
 }
 
 /// Output format for export
@@ -217,6 +234,8 @@ impl Default for ExportOptions {
             a_vqs0: -1.0,
             theta_f: 3.0,
             theta_b: 0.5,
+            theta_s: 5.0,
+            hc: 5.0,
             dz_bottom_min: 0.5,
             output_format: OutputFormat::CliArgs,
         }
@@ -1388,20 +1407,26 @@ impl App {
                 }
             }
 
-            // Toggle stretching transform type
+            // Cycle stretching transform type through all options
             KeyCode::Char('t') => {
                 self.export_options.stretching = match self.export_options.stretching {
-                    StretchingType::S => StretchingType::Quadratic,
                     StretchingType::Quadratic => StretchingType::S,
+                    StretchingType::S => StretchingType::Shchepetkin2005,
+                    StretchingType::Shchepetkin2005 => StretchingType::Shchepetkin2010,
+                    StretchingType::Shchepetkin2010 => StretchingType::Geyer,
+                    StretchingType::Geyer => StretchingType::Quadratic,
                 };
                 let name = match self.export_options.stretching {
-                    StretchingType::S => "S-transform",
-                    StretchingType::Quadratic => "Quadratic",
+                    StretchingType::Quadratic => "Quadratic [a/A]",
+                    StretchingType::S => "S-transform [f/F b/B]",
+                    StretchingType::Shchepetkin2005 => "Shchepetkin2005 [s/S b/B h/H]",
+                    StretchingType::Shchepetkin2010 => "Shchepetkin2010 [s/S b/B h/H]",
+                    StretchingType::Geyer => "Geyer [s/S b/B h/H]",
                 };
                 Some((format!("Transform: {}", name), StatusLevel::Info))
             }
 
-            // Adjust theta_f (S-transform): F/f = increase/decrease
+            // Adjust theta_f (S-transform only): F/f = increase/decrease
             KeyCode::Char('F') => {
                 if matches!(self.export_options.stretching, StretchingType::S) {
                     self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
@@ -1419,21 +1444,68 @@ impl App {
                 }
             }
 
-            // Adjust theta_b (S-transform): B/b = increase/decrease
+            // Adjust theta_b (S-transform and ROMS): B/b = increase/decrease
+            // For S-transform: range [0, 1], for ROMS: range [0, 4]
             KeyCode::Char('B') => {
-                if matches!(self.export_options.stretching, StretchingType::S) {
-                    self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
-                    Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
-                } else {
-                    None
+                match self.export_options.stretching {
+                    StretchingType::S => {
+                        self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
+                        Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                    }
+                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                        self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(4.0);
+                        Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                    }
+                    _ => None
                 }
             }
             KeyCode::Char('b') => {
-                if matches!(self.export_options.stretching, StretchingType::S) {
-                    self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
-                    Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
-                } else {
-                    None
+                match self.export_options.stretching {
+                    StretchingType::S | StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                        self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
+                        Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                    }
+                    _ => None
+                }
+            }
+
+            // Adjust theta_s (ROMS transforms only): S/s = increase/decrease
+            KeyCode::Char('S') => {
+                match self.export_options.stretching {
+                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                        self.export_options.theta_s = (self.export_options.theta_s + 0.5).min(10.0);
+                        Some((format!("θs: {:.1}", self.export_options.theta_s), StatusLevel::Info))
+                    }
+                    _ => None
+                }
+            }
+            KeyCode::Char('s') => {
+                match self.export_options.stretching {
+                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                        self.export_options.theta_s = (self.export_options.theta_s - 0.5).max(0.0);
+                        Some((format!("θs: {:.1}", self.export_options.theta_s), StatusLevel::Info))
+                    }
+                    _ => None
+                }
+            }
+
+            // Adjust hc (ROMS transforms only): H/h = increase/decrease
+            KeyCode::Char('H') => {
+                match self.export_options.stretching {
+                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                        self.export_options.hc = (self.export_options.hc + 1.0).min(100.0);
+                        Some((format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info))
+                    }
+                    _ => None
+                }
+            }
+            KeyCode::Char('h') => {
+                match self.export_options.stretching {
+                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                        self.export_options.hc = (self.export_options.hc - 1.0).max(1.0);
+                        Some((format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info))
+                    }
+                    _ => None
                 }
             }
 
@@ -1486,6 +1558,20 @@ impl App {
             theta_b: self.export_options.theta_b,
             a_vqs0: self.export_options.a_vqs0,
             etal: 0.0,
+            theta_s: self.export_options.theta_s,
+            hc: self.export_options.hc,
+        }
+    }
+
+    /// Convert StretchingType to StretchingKind for stretching calculations
+    pub fn get_stretching_kind(&self) -> super::stretching::StretchingKind {
+        use super::stretching::StretchingKind;
+        match self.export_options.stretching {
+            StretchingType::Quadratic => StretchingKind::Quadratic,
+            StretchingType::S => StretchingKind::S,
+            StretchingType::Shchepetkin2005 => StretchingKind::Shchepetkin2005,
+            StretchingType::Shchepetkin2010 => StretchingKind::Shchepetkin2010,
+            StretchingType::Geyer => StretchingKind::Geyer,
         }
     }
 
@@ -1592,6 +1678,8 @@ impl App {
                 let etal = 0.0;
                 let theta_f = self.export_options.theta_f;
                 let theta_b = self.export_options.theta_b;
+                let theta_s = self.export_options.theta_s;
+                let hc = self.export_options.hc;
                 let skew_decay_rate = 0.03;
                 let dz_bottom_min = self.export_options.dz_bottom_min;
 
@@ -1619,6 +1707,57 @@ impl App {
                             skew_decay_rate: &skew_decay_rate,
                         };
                         let transform = StretchingFunction::Quadratic(opts);
+                        VQSBuilder::default()
+                            .hgrid(&mesh.hgrid)
+                            .depths(&depths)
+                            .nlevels(&nlevels)
+                            .stretching(&transform)
+                            .dz_bottom_min(&dz_bottom_min)
+                            .build()
+                    }
+                    StretchingType::Shchepetkin2005 => {
+                        let opts = Shchepetkin2005Opts::new(
+                            &etal,
+                            &a_vqs0,
+                            &theta_s,
+                            &theta_b,
+                            &hc,
+                        );
+                        let transform = StretchingFunction::Shchepetkin2005(opts);
+                        VQSBuilder::default()
+                            .hgrid(&mesh.hgrid)
+                            .depths(&depths)
+                            .nlevels(&nlevels)
+                            .stretching(&transform)
+                            .dz_bottom_min(&dz_bottom_min)
+                            .build()
+                    }
+                    StretchingType::Shchepetkin2010 => {
+                        let opts = Shchepetkin2010Opts::new(
+                            &etal,
+                            &a_vqs0,
+                            &theta_s,
+                            &theta_b,
+                            &hc,
+                        );
+                        let transform = StretchingFunction::Shchepetkin2010(opts);
+                        VQSBuilder::default()
+                            .hgrid(&mesh.hgrid)
+                            .depths(&depths)
+                            .nlevels(&nlevels)
+                            .stretching(&transform)
+                            .dz_bottom_min(&dz_bottom_min)
+                            .build()
+                    }
+                    StretchingType::Geyer => {
+                        let opts = GeyerOpts::new(
+                            &etal,
+                            &a_vqs0,
+                            &theta_s,
+                            &theta_b,
+                            &hc,
+                        );
+                        let transform = StretchingFunction::Geyer(opts);
                         VQSBuilder::default()
                             .hgrid(&mesh.hgrid)
                             .depths(&depths)
@@ -1668,12 +1807,31 @@ impl App {
         let transform = match self.export_options.stretching {
             StretchingType::Quadratic => "quadratic",
             StretchingType::S => "s",
+            StretchingType::Shchepetkin2005 => "shchepetkin2005",
+            StretchingType::Shchepetkin2010 => "shchepetkin2010",
+            StretchingType::Geyer => "geyer",
         };
 
-        format!(
+        // Build base command
+        let mut cmd = format!(
             "--transform {} --depths \"{}\" --nlevels \"{}\"",
             transform, depths_str, nlevels_str
-        )
+        );
+
+        // Add ROMS-specific parameters if needed
+        match self.export_options.stretching {
+            StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                cmd.push_str(&format!(
+                    " --theta-s {:.1} --theta-b {:.1} --hc {:.1}",
+                    self.export_options.theta_s,
+                    self.export_options.theta_b,
+                    self.export_options.hc
+                ));
+            }
+            _ => {}
+        }
+
+        cmd
     }
 
     /// Generate YAML configuration
@@ -1695,9 +1853,13 @@ impl App {
         let stretching = match self.export_options.stretching {
             StretchingType::Quadratic => "quadratic",
             StretchingType::S => "s",
+            StretchingType::Shchepetkin2005 => "shchepetkin2005",
+            StretchingType::Shchepetkin2010 => "shchepetkin2010",
+            StretchingType::Geyer => "geyer",
         };
 
-        format!(
+        // Base YAML with common parameters
+        let mut yaml = format!(
             r#"vgrid:
   type: vqs
   method: hsm
@@ -1707,6 +1869,24 @@ impl App {
     function: {}
     a_vqs0: {}"#,
             depths_yaml, nlevels_yaml, stretching, self.export_options.a_vqs0
-        )
+        );
+
+        // Add ROMS-specific parameters if needed
+        match self.export_options.stretching {
+            StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
+                yaml.push_str(&format!(
+                    r#"
+    theta_s: {}
+    theta_b: {}
+    hc: {}"#,
+                    self.export_options.theta_s,
+                    self.export_options.theta_b,
+                    self.export_options.hc
+                ));
+            }
+            _ => {}
+        }
+
+        yaml
     }
 }

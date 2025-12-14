@@ -11,7 +11,7 @@ use super::app::{AnchorEditMode, App, Focus, StatusLevel, StretchingType, ViewMo
 use super::table::EditMode;
 use super::colors::get_cell_colors;
 use super::preview::render_path_preview;
-use super::stretching::{compute_z_with_truncation, compute_layer_thicknesses, StretchingParams};
+use super::stretching::{compute_z_with_truncation, compute_layer_thicknesses};
 
 /// Draw the complete UI
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -462,13 +462,8 @@ fn render_anchor_view(frame: &mut Frame, area: Rect, app: &mut App) {
     y += 1;
 
     // Get stretching params for dz computation
-    let stretch_params = StretchingParams {
-        theta_f: app.export_options.theta_f,
-        theta_b: app.export_options.theta_b,
-        a_vqs0: app.export_options.a_vqs0,
-        etal: 0.0,
-    };
-    let use_s_transform = matches!(app.export_options.stretching, StretchingType::S);
+    let stretch_params = app.get_stretching_params();
+    let stretching_kind = app.get_stretching_kind();
     let first_depth = app.path.anchors.first().map(|a| a.depth).unwrap_or(1.0);
     let dz_bottom_min = app.export_options.dz_bottom_min;
 
@@ -493,7 +488,7 @@ fn render_anchor_view(frame: &mut Frame, area: Rect, app: &mut App) {
             &stretch_params,
             first_depth,
             dz_bottom_min,
-            use_s_transform,
+            stretching_kind,
         );
         let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
 
@@ -684,9 +679,14 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
         }
 
         // Stretching parameters (affects dz computation)
-        let is_s_transform = matches!(app.export_options.stretching, StretchingType::S);
-        let stretch_line = if is_s_transform {
-            Line::from(vec![
+        let stretch_line = match app.export_options.stretching {
+            StretchingType::Quadratic => Line::from(vec![
+                Span::styled("[t]Quad ", Style::default().fg(Color::Green).bold()),
+                Span::styled("a:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.a_vqs0), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" [a/A]", Style::default().fg(Color::DarkGray)),
+            ]),
+            StretchingType::S => Line::from(vec![
                 Span::styled("[t]S ", Style::default().fg(Color::Green).bold()),
                 Span::styled("θf:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_f), Style::default().fg(Color::Cyan).bold()),
@@ -694,14 +694,34 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
                 Span::styled("θb:", Style::default().fg(Color::White)),
                 Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
                 Span::styled(" [b/B]", Style::default().fg(Color::DarkGray)),
-            ])
-        } else {
-            Line::from(vec![
-                Span::styled("[t]Quad ", Style::default().fg(Color::Green).bold()),
-                Span::styled("a:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.a_vqs0), Style::default().fg(Color::Cyan).bold()),
-                Span::styled(" [a/A]", Style::default().fg(Color::DarkGray)),
-            ])
+            ]),
+            StretchingType::Shchepetkin2005 => Line::from(vec![
+                Span::styled("[t]Shch05 ", Style::default().fg(Color::Green).bold()),
+                Span::styled("θs:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" θb:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" hc:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
+            ]),
+            StretchingType::Shchepetkin2010 => Line::from(vec![
+                Span::styled("[t]Shch10 ", Style::default().fg(Color::Green).bold()),
+                Span::styled("θs:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" θb:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" hc:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
+            ]),
+            StretchingType::Geyer => Line::from(vec![
+                Span::styled("[t]Geyer ", Style::default().fg(Color::Green).bold()),
+                Span::styled("θs:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" θb:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
+                Span::styled(" hc:", Style::default().fg(Color::White)),
+                Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
+            ]),
         };
         frame.render_widget(Paragraph::new(stretch_line), Rect::new(inner.x, y, inner.width, 1));
         y += 1;
@@ -739,13 +759,8 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
         y += 1;
 
         // Get stretching params for dz computation
-        let stretch_params = StretchingParams {
-            theta_f: app.export_options.theta_f,
-            theta_b: app.export_options.theta_b,
-            a_vqs0: app.export_options.a_vqs0,
-            etal: 0.0,
-        };
-        let use_s_transform = matches!(app.export_options.stretching, StretchingType::S);
+        let stretch_params = app.get_stretching_params();
+        let stretching_kind = app.get_stretching_kind();
         let first_depth = mode.preview.first().map(|a| a.depth).unwrap_or(1.0);
         let dz_bottom_min = app.export_options.dz_bottom_min;
 
@@ -763,7 +778,7 @@ fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
                 &stretch_params,
                 first_depth,
                 dz_bottom_min,
-                use_s_transform,
+                stretching_kind,
             );
 
             let thicknesses = compute_layer_thicknesses(&truncation.z_coords);

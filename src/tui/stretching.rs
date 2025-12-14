@@ -1,21 +1,25 @@
 //! Stretching function calculations for layer distribution preview
 //!
 //! Computes actual z-coordinates and layer thicknesses based on
-//! S-transform or Quadratic stretching functions.
+//! various stretching functions: S-transform, Quadratic, and ROMS variants.
 
-use libm::{sinh, tanh};
+use libm::{cosh, exp, log, sinh, tanh};
 
 /// Parameters for stretching functions
 #[derive(Clone, Debug)]
 pub struct StretchingParams {
-    /// Surface/bottom focusing parameter (0, 20]
+    /// S-transform: Surface/bottom focusing parameter (0, 20]
     pub theta_f: f64,
-    /// Bottom layer focusing [0, 1] - 0=surface, 1=bottom
+    /// S-transform/ROMS: Bottom layer focusing [0, 1] for S, [0, 4] for ROMS
     pub theta_b: f64,
     /// Stretching amplitude [-1, 1] - negative=bottom, positive=surface
     pub a_vqs0: f64,
     /// Water elevation (usually 0)
     pub etal: f64,
+    /// ROMS: Surface stretching parameter [0, 10]
+    pub theta_s: f64,
+    /// ROMS: Critical depth in meters (>0) - controls stretching transition width
+    pub hc: f64,
 }
 
 impl Default for StretchingParams {
@@ -25,6 +29,8 @@ impl Default for StretchingParams {
             theta_b: 0.5,
             a_vqs0: -1.0,
             etal: 0.0,
+            theta_s: 5.0,
+            hc: 5.0,
         }
     }
 }
@@ -93,6 +99,156 @@ pub fn compute_quadratic_z(depth: f64, nlevels: usize, params: &StretchingParams
 
         let z = params.etal + cs * (depth + params.etal);
         z_coords.push(z);
+    }
+
+    z_coords
+}
+
+/// Compute z-coordinates using Shchepetkin (2005) UCLA-ROMS stretching
+///
+/// Reference: Shchepetkin, A.F. and J.C. McWilliams, 2005
+pub fn compute_shchepetkin2005_z(depth: f64, nlevels: usize, params: &StretchingParams) -> Vec<f64> {
+    let mut z_coords = Vec::with_capacity(nlevels);
+    let kb = nlevels;
+    let kbm1 = kb - 1;
+    let ds = 1.0 / (kbm1 as f64);
+    let aweight = 1.0_f64;
+    let bweight = 1.0_f64;
+
+    // Compute sigma and Cs at each level
+    let mut sc_w = vec![0.0_f64; kb];
+    let mut cs_w = vec![0.0_f64; kb];
+
+    sc_w[kbm1] = 0.0;
+    cs_w[kbm1] = 0.0;
+
+    for k in (1..kbm1).rev() {
+        let cff_w = ds * ((k as f64) - (kbm1 as f64));
+        sc_w[k] = cff_w;
+
+        if params.theta_s > 0.0 {
+            let csur = (1.0 - cosh(params.theta_s * cff_w)) / (cosh(params.theta_s) - 1.0);
+
+            if params.theta_b > 0.0 {
+                let cbot = sinh(params.theta_b * (cff_w + 1.0)) / sinh(params.theta_b) - 1.0;
+                let sigma_plus_1 = cff_w + 1.0;
+                let cweight = sigma_plus_1.powf(aweight)
+                    * (1.0 + (aweight / bweight) * (1.0 - sigma_plus_1.powf(bweight)));
+                cs_w[k] = cweight * csur + (1.0 - cweight) * cbot;
+            } else {
+                cs_w[k] = csur;
+            }
+        } else {
+            cs_w[k] = cff_w;
+        }
+    }
+
+    sc_w[0] = -1.0;
+    cs_w[0] = -1.0;
+
+    // Convert to z-coordinates (flip indexing for SCHISM convention)
+    let h = depth;
+    let hinv = 1.0 / (params.hc + h);
+
+    for k in 0..kb {
+        let roms_k = kbm1 - k;
+        let cff2_w = (params.hc * sc_w[roms_k] + cs_w[roms_k] * h) * hinv;
+        z_coords.push(cff2_w * h);
+    }
+
+    z_coords
+}
+
+/// Compute z-coordinates using Shchepetkin (2010) UCLA-ROMS double stretching
+pub fn compute_shchepetkin2010_z(depth: f64, nlevels: usize, params: &StretchingParams) -> Vec<f64> {
+    let mut z_coords = Vec::with_capacity(nlevels);
+    let kb = nlevels;
+    let kbm1 = kb - 1;
+    let ds = 1.0 / (kbm1 as f64);
+
+    let mut sc_w = vec![0.0_f64; kb];
+    let mut cs_w = vec![0.0_f64; kb];
+
+    sc_w[kbm1] = 0.0;
+    cs_w[kbm1] = 0.0;
+
+    for k in (1..kbm1).rev() {
+        let cff_w = ds * ((k as f64) - (kbm1 as f64));
+        sc_w[k] = cff_w;
+
+        // Surface stretching
+        let csur = if params.theta_s > 0.0 {
+            (1.0 - cosh(params.theta_s * cff_w)) / (cosh(params.theta_s) - 1.0)
+        } else {
+            -cff_w * cff_w
+        };
+
+        // Bottom stretching (double stretching)
+        if params.theta_b > 0.0 {
+            let cbot = (exp(params.theta_b * csur) - 1.0) / (1.0 - exp(-params.theta_b));
+            cs_w[k] = cbot;
+        } else {
+            cs_w[k] = csur;
+        }
+    }
+
+    sc_w[0] = -1.0;
+    cs_w[0] = -1.0;
+
+    let h = depth;
+    let hinv = 1.0 / (params.hc + h);
+
+    for k in 0..kb {
+        let roms_k = kbm1 - k;
+        let cff2_w = (params.hc * sc_w[roms_k] + cs_w[roms_k] * h) * hinv;
+        z_coords.push(cff2_w * h);
+    }
+
+    z_coords
+}
+
+/// Compute z-coordinates using R. Geyer stretching for high bottom boundary layer resolution
+///
+/// Designed for relatively shallow applications with high bottom resolution needs.
+pub fn compute_geyer_z(depth: f64, nlevels: usize, params: &StretchingParams) -> Vec<f64> {
+    const HSCALE: f64 = 3.0;
+
+    let mut z_coords = Vec::with_capacity(nlevels);
+    let kb = nlevels;
+    let kbm1 = kb - 1;
+    let ds = 1.0 / (kbm1 as f64);
+
+    // In Geyer's formulation, theta_s is surface exponent, theta_b is bottom exponent
+    let exp_sur = params.theta_s;
+    let exp_bot = params.theta_b;
+    let log_cosh_hscale = log(cosh(HSCALE));
+
+    let mut sc_w = vec![0.0_f64; kb];
+    let mut cs_w = vec![0.0_f64; kb];
+
+    sc_w[kbm1] = 0.0;
+    cs_w[kbm1] = 0.0;
+
+    for k in (1..kbm1).rev() {
+        let cff_w = ds * ((k as f64) - (kbm1 as f64));
+        sc_w[k] = cff_w;
+
+        let cbot = log(cosh(HSCALE * (cff_w + 1.0).powf(exp_bot))) / log_cosh_hscale - 1.0;
+        let csur = -log(cosh(HSCALE * cff_w.abs().powf(exp_sur))) / log_cosh_hscale;
+        let cweight = 0.5 * (1.0 - tanh(HSCALE * (cff_w + 0.5)));
+        cs_w[k] = cweight * cbot + (1.0 - cweight) * csur;
+    }
+
+    sc_w[0] = -1.0;
+    cs_w[0] = -1.0;
+
+    let h = depth;
+    let hinv = 1.0 / (params.hc + h);
+
+    for k in 0..kb {
+        let roms_k = kbm1 - k;
+        let cff2_w = (params.hc * sc_w[roms_k] + cs_w[roms_k] * h) * hinv;
+        z_coords.push(cff2_w * h);
     }
 
     z_coords
@@ -184,6 +340,33 @@ pub fn apply_bottom_truncation(
     }
 }
 
+/// Stretching type for compute functions (mirrors app::StretchingType)
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StretchingKind {
+    Quadratic,
+    S,
+    Shchepetkin2005,
+    Shchepetkin2010,
+    Geyer,
+}
+
+/// Compute z-coordinates for a given stretching type
+pub fn compute_z_for_stretching(
+    depth: f64,
+    nlevels: usize,
+    params: &StretchingParams,
+    first_depth: f64,
+    stretching: StretchingKind,
+) -> Vec<f64> {
+    match stretching {
+        StretchingKind::S => compute_s_transform_z(depth, nlevels, params, first_depth),
+        StretchingKind::Quadratic => compute_quadratic_z(depth, nlevels, params),
+        StretchingKind::Shchepetkin2005 => compute_shchepetkin2005_z(depth, nlevels, params),
+        StretchingKind::Shchepetkin2010 => compute_shchepetkin2010_z(depth, nlevels, params),
+        StretchingKind::Geyer => compute_geyer_z(depth, nlevels, params),
+    }
+}
+
 /// Compute z-coordinates with bottom truncation applied
 ///
 /// Combines stretching calculation with truncation in one call.
@@ -193,14 +376,9 @@ pub fn compute_z_with_truncation(
     params: &StretchingParams,
     first_depth: f64,
     dz_bottom_min: f64,
-    use_s_transform: bool,
+    stretching: StretchingKind,
 ) -> TruncationResult {
-    let z_coords = if use_s_transform {
-        compute_s_transform_z(depth, nlevels, params, first_depth)
-    } else {
-        compute_quadratic_z(depth, nlevels, params)
-    };
-
+    let z_coords = compute_z_for_stretching(depth, nlevels, params, first_depth, stretching);
     apply_bottom_truncation(&z_coords, depth, dz_bottom_min)
 }
 
@@ -209,7 +387,7 @@ pub fn compute_path_zone_stats(
     depths: &[f64],
     nlevels: &[usize],
     params: &StretchingParams,
-    use_s_transform: bool,
+    stretching: StretchingKind,
 ) -> Vec<ZoneStats> {
     if depths.is_empty() || nlevels.is_empty() {
         return vec![];
@@ -220,11 +398,7 @@ pub fn compute_path_zone_stats(
 
     for (i, (&depth, &nlev)) in depths.iter().zip(nlevels.iter()).enumerate() {
         // Compute z-coordinates for this anchor
-        let z_coords = if use_s_transform {
-            compute_s_transform_z(depth, nlev, params, first_depth)
-        } else {
-            compute_quadratic_z(depth, nlev, params)
-        };
+        let z_coords = compute_z_for_stretching(depth, nlev, params, first_depth, stretching);
 
         let thicknesses = compute_layer_thicknesses(&z_coords);
 
