@@ -8,7 +8,8 @@ Set Height 700
 Set FontSize 14
 Set Padding 10
 
-Type "/home/jreniel/schismrs/target/release/vqs-designer -g /home/jreniel/schismrs/src/schismrs/dev/hgrid.gr3"
+Type "target/release/vqs-designer -g hgrid.gr3"
+Sleep 2s
 Enter
 Sleep 3s
 
@@ -18,9 +19,9 @@ Sleep 2s
 
 # Switch to anchor view
 Type "v"
-Sleep 2s
+Sleep 3s
 
-# Navigate and show editing
+# Navigate to show the view
 Down
 Sleep 500ms
 Down

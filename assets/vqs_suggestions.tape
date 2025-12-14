@@ -8,7 +8,8 @@ Set Height 700
 Set FontSize 14
 Set Padding 10
 
-Type "/home/jreniel/schismrs/target/release/vqs-designer -g /home/jreniel/schismrs/src/schismrs/dev/hgrid.gr3"
+Type "target/release/vqs-designer -g hgrid.gr3"
+Sleep 2s
 Enter
 Sleep 3s
 

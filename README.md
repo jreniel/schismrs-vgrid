@@ -6,11 +6,11 @@ Vertical grid generation for SCHISM ocean model, featuring an interactive TUI de
 
 The star of this crate is **vqs-designer** - an interactive terminal application for designing VQS (Variable Quadratic/S-coordinate) master grids.
 
+![VQS Designer Workflow](./assets/vqs_designer_suggestions.gif)
+
 ```bash
 cargo run --release --bin vqs-designer -- -g /path/to/hgrid.gr3
 ```
-
-![VQS Designer Main View](./assets/vqs_designer_main.png)
 
 ### Features
 
@@ -18,14 +18,12 @@ cargo run --release --bin vqs-designer -- -g /path/to/hgrid.gr3
 - **Table View**: Traditional construction table (depths × min Δz) for visual cell selection
 - **Anchor View**: Direct editing of (depth, N) pairs for precise control
 
-![Anchor View](./assets/vqs_designer_anchors.png)
+![Table View](./assets/vqs_designer_main.png) ![Anchor View](./assets/vqs_designer_anchors.png)
 
 **Mesh-Aware Suggestions** (press `S`):
 - Exponential, Uniform, and Percentile algorithms
 - Analyzes your mesh's depth distribution
 - Real-time preview with Δz statistics
-
-![Suggestion Mode](./assets/vqs_designer_suggestions.gif)
 
 **Real-Time Feedback**:
 - Layer thickness statistics (min/avg/max Δz) per anchor
