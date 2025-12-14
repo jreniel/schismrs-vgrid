@@ -1,16 +1,77 @@
 # schismrs-vgrid
 
-Vertical grid generation for SCHISM ocean model.
+Vertical grid generation for SCHISM ocean model, featuring an interactive TUI designer.
 
-## Binaries
+## VQS Designer
+
+The star of this crate is **vqs-designer** - an interactive terminal application for designing VQS (Variable Quadratic/S-coordinate) master grids.
+
+```bash
+cargo run --release --bin vqs-designer -- -g /path/to/hgrid.gr3
+```
+
+![VQS Designer Main View](./assets/vqs_designer_main.png)
+
+### Features
+
+**Two Synchronized Views** (toggle with `v`):
+- **Table View**: Traditional construction table (depths × min Δz) for visual cell selection
+- **Anchor View**: Direct editing of (depth, N) pairs for precise control
+
+![Anchor View](./assets/vqs_designer_anchors.png)
+
+**Mesh-Aware Suggestions** (press `S`):
+- Exponential, Uniform, and Percentile algorithms
+- Analyzes your mesh's depth distribution
+- Real-time preview with Δz statistics
+
+![Suggestion Mode](./assets/vqs_designer_suggestions.gif)
+
+**Real-Time Feedback**:
+- Layer thickness statistics (min/avg/max Δz) per anchor
+- Bottom truncation preview based on `dz_bottom_min`
+- Stretching parameter adjustment (θf, θb, a_vqs0)
+
+**Export**:
+- Generate `vgrid.in` directly (requires mesh with `-g` flag)
+- Overwrite confirmation for safety
+
+### Keyboard Controls
+
+| Key | Action |
+|-----|--------|
+| `v` | Toggle Table/Anchor view |
+| `S` | Enter suggestion mode |
+| `Space/Enter` | Select cell (Table) / Edit anchor (Anchor) |
+| `a/A` | Add depth row / Δz column (Table) or Add anchor (Anchor) |
+| `d` | Delete row/column (Table) or Delete anchor (Anchor) |
+| `e/E` | Export modal |
+| `s/q` | Toggle S-transform / Quadratic stretching |
+| `f/F` | Adjust θf (±0.5) |
+| `b/B` | Adjust θb (±0.1) |
+| `z/Z` | Adjust dz_bottom_min (±0.1) |
+| `{/}` | Resize panels |
+| `?` | Help overlay |
+| `Esc/q` | Quit |
+
+### Example Workflow
+
+1. Load your mesh: `vqs-designer -g mesh.gr3`
+2. Press `S` to enter suggestion mode
+3. Adjust parameters (target levels, min Δz, number of anchors)
+4. Press `Enter` to accept suggestions
+5. Fine-tune in Table or Anchor view
+6. Press `e` to export `vgrid.in`
+
+---
+
+## Other Binaries
 
 | Binary | Purpose |
 |--------|---------|
 | `gen_sz` | Generate SZ (sigma-z) vertical grids |
-| `gen_vqs` | Generate VQS (variable quadratic/S-coordinate) grids |
+| `gen_vqs` | Generate VQS grids from CLI arguments |
 | `vqs-designer` | Interactive TUI for designing VQS master grids |
-
-Use `--help` for detailed options. Use `--release` for 10x speedups.
 
 ## gen_sz
 
@@ -30,7 +91,7 @@ cargo run --release --bin gen_sz -- /path/to/hgrid.gr3 \
 
 ## gen_vqs
 
-Generate VQS grids using the HSM (Hierarchical Sigma Method) master grid specification.
+Generate VQS grids using CLI arguments (for scripting/automation).
 
 ```bash
 cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
@@ -39,10 +100,9 @@ cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
     --a-vqs0=-0.3 \
     --theta-b=0. \
     --theta-f=3. \
-    --show-zmas-plot \
     -o vgrid.in \
-    hsm --depths 50 60 80 110 150 200 260 330 410 500 600 8426 \
-        --nlevels 21 22 23 24 25 26 27 28 29 30 31 32
+    hsm --depths 50 100 200 500 1000 \
+        --nlevels 10 15 20 25 30
 ```
 
 ### Parameters
@@ -55,31 +115,11 @@ cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
 | `--a-vqs0` | Stretching amplitude (-1 to 1) |
 | `--dz-bottom-min` | Minimum bottom layer thickness |
 
-### HSM Master Grid
-
-The `--depths` and `--nlevels` arrays define the master grid:
-- Each depth threshold maps to a number of vertical levels
-- Levels must be non-decreasing with depth (monotonicity constraint)
-- Nodes are assigned to the appropriate master grid based on their depth
-
-## vqs-designer
-
-Interactive TUI for designing VQS master grids using the LSC² framework.
-
-```bash
-cargo run --release -p schismrs-vgrid --bin vqs-designer
-```
-
-Features:
-- Dynamic construction table (depths × min Δz)
-- Click or keyboard to select anchor points
-- Monotonicity enforcement (levels never decrease with depth)
-- Real-time zone statistics with stretching preview
-- Export to CLI args, YAML config, or vgrid.in
+---
 
 ## Compilation
 
-This crate depends on libproj (C++ library). Use conda to provide dependencies:
+This crate depends on libproj. Use conda to provide dependencies:
 
 ```bash
 conda create -n schismrs
@@ -91,8 +131,6 @@ LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH \
 PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH \
 cargo build --release
 ```
-
-The resulting binary is statically compiled and doesn't require conda at runtime.
 
 ## License
 
