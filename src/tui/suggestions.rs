@@ -290,7 +290,7 @@ impl SuggestionMode {
 
     /// Adjust number of anchors
     pub fn adjust_num_anchors(&mut self, delta: i32) {
-        let new_val = (self.params.num_anchors as i32 + delta).max(2).min(12) as usize;
+        let new_val = (self.params.num_anchors as i32 + delta).max(2) as usize;
         self.params.num_anchors = new_val;
     }
 

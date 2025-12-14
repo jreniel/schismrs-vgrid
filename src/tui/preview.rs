@@ -5,19 +5,26 @@
 
 use ratatui::{
     prelude::*,
-    widgets::{Block, Borders, Paragraph},
+    widgets::{Block, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState},
 };
 
 use super::app::{App, Focus, StretchingType};
-use super::path::PathError;
 use super::stretching::compute_path_zone_stats;
 
-/// Render the path preview panel
+/// Render the path preview panel with scrollable anchor list
 pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
     let is_focused = app.focus == Focus::PathPreview;
 
+    // Count anchors for scroll indicator
+    let anchor_count = app.path.anchors.len();
+    let title = if anchor_count > 0 {
+        format!(" Anchors ({}) ", anchor_count)
+    } else {
+        " Selected Path ".to_string()
+    };
+
     let block = Block::default()
-        .title(" Selected Path ")
+        .title(title)
         .title_style(Style::default().fg(Color::Cyan).bold())
         .borders(Borders::ALL)
         .border_style(if is_focused {
@@ -29,55 +36,48 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let mut lines: Vec<Line> = vec![];
+    // Calculate available height for anchor list
+    // Reserve: 2 for header, 1 for separator, 3 for validation/status
+    let header_lines = 2u16;
+    let footer_lines = 4u16;
+    let available_for_anchors = inner.height.saturating_sub(header_lines + footer_lines) as usize;
+
+    let mut y = inner.y;
 
     // Header
-    lines.push(Line::from(vec![
-        Span::styled(
-            format!("{:>8}", "Depth"),
-            Style::default().fg(Color::White).bold(),
-        ),
+    let header = Line::from(vec![
+        Span::styled(format!("{:>8}", "Depth"), Style::default().fg(Color::White).bold()),
         Span::raw(" "),
-        Span::styled(
-            format!("{:>4}", "N"),
-            Style::default().fg(Color::White).bold(),
-        ),
+        Span::styled(format!("{:>4}", "N"), Style::default().fg(Color::White).bold()),
         Span::raw(" "),
-        Span::styled(
-            format!("{:>6}", "minΔz"),
-            Style::default().fg(Color::White).bold(),
-        ),
+        Span::styled(format!("{:>6}", "minΔz"), Style::default().fg(Color::White).bold()),
         Span::raw(" "),
-        Span::styled(
-            format!("{:>6}", "avgΔz"),
-            Style::default().fg(Color::White).bold(),
-        ),
+        Span::styled(format!("{:>6}", "avgΔz"), Style::default().fg(Color::White).bold()),
         Span::raw(" "),
-        Span::styled(
-            format!("{:>6}", "maxΔz"),
-            Style::default().fg(Color::White).bold(),
-        ),
-    ]));
-    lines.push(Line::from(Span::styled(
-        "─".repeat(38),
-        Style::default().fg(Color::DarkGray),
-    )));
+        Span::styled(format!("{:>6}", "maxΔz"), Style::default().fg(Color::White).bold()),
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(inner.x, y, inner.width, 1));
+    y += 1;
+
+    // Separator
+    let sep = Paragraph::new("─".repeat((inner.width.saturating_sub(1)) as usize))
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(sep, Rect::new(inner.x, y, inner.width, 1));
+    y += 1;
 
     // Path anchors with zone stats
     if app.path.anchors.is_empty() {
-        lines.push(Line::from(Span::styled(
-            "No anchors selected",
-            Style::default().fg(Color::DarkGray).italic(),
-        )));
-        lines.push(Line::from(""));
-        lines.push(Line::from(Span::styled(
-            "Click cells or press",
-            Style::default().fg(Color::DarkGray),
-        )));
-        lines.push(Line::from(Span::styled(
-            "Space/Enter to select",
-            Style::default().fg(Color::DarkGray),
-        )));
+        let empty_msg = Paragraph::new("No anchors selected")
+            .style(Style::default().fg(Color::DarkGray).italic());
+        frame.render_widget(empty_msg, Rect::new(inner.x, y, inner.width, 1));
+        y += 1;
+        let hint1 = Paragraph::new("Press Space to select cells")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(hint1, Rect::new(inner.x, y, inner.width, 1));
+        y += 1;
+        let hint2 = Paragraph::new("or S for suggestions")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(hint2, Rect::new(inner.x, y, inner.width, 1));
     } else {
         // Compute zone stats with stretching
         let (depths, nlevels) = app.path.to_hsm_config();
@@ -85,7 +85,16 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
         let use_s_transform = app.export_options.stretching == StretchingType::S;
         let zone_stats = compute_path_zone_stats(&depths, &nlevels, &params, use_s_transform);
 
-        for (i, anchor) in app.path.anchors.iter().enumerate() {
+        // Apply scroll offset
+        let scroll_offset = app.preview_scroll.min(anchor_count.saturating_sub(1));
+        let visible_anchors = app.path.anchors.iter().enumerate().skip(scroll_offset);
+
+        let mut rendered = 0;
+        for (i, anchor) in visible_anchors {
+            if rendered >= available_for_anchors {
+                break;
+            }
+
             // Check for monotonicity issues
             let has_error = i > 0 && anchor.nlevels < app.path.anchors[i - 1].nlevels;
 
@@ -118,65 +127,81 @@ pub fn render_path_preview(frame: &mut Frame, area: Rect, app: &App) {
                 spans.push(Span::styled(" !", Style::default().fg(Color::Red).bold()));
             }
 
-            lines.push(Line::from(spans));
+            let line = Paragraph::new(Line::from(spans));
+            frame.render_widget(line, Rect::new(inner.x, y, inner.width, 1));
+            y += 1;
+            rendered += 1;
+        }
+
+        // Show scroll indicator if there are more anchors
+        if anchor_count > available_for_anchors {
+            let remaining = anchor_count.saturating_sub(scroll_offset + rendered);
+            if remaining > 0 {
+                let more = Paragraph::new(format!("↓ {} more", remaining))
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(more, Rect::new(inner.x, y, inner.width, 1));
+            } else if scroll_offset > 0 {
+                let more = Paragraph::new(format!("↑ {} above", scroll_offset))
+                    .style(Style::default().fg(Color::DarkGray));
+                frame.render_widget(more, Rect::new(inner.x, y, inner.width, 1));
+            }
+
+            // Render scrollbar on the right side
+            let scrollbar_area = Rect::new(
+                inner.x + inner.width - 1,
+                inner.y + header_lines,
+                1,
+                available_for_anchors as u16,
+            );
+            let mut scrollbar_state = ScrollbarState::new(anchor_count)
+                .position(scroll_offset)
+                .viewport_content_length(available_for_anchors);
+            frame.render_stateful_widget(
+                Scrollbar::new(ScrollbarOrientation::VerticalRight)
+                    .begin_symbol(Some("↑"))
+                    .end_symbol(Some("↓")),
+                scrollbar_area,
+                &mut scrollbar_state,
+            );
         }
     }
+
+    // Footer section: validation + stretching info + hints
+    let footer_y = inner.y + inner.height - footer_lines;
+    let mut fy = footer_y;
 
     // Separator
-    lines.push(Line::from(""));
+    let sep2 = Paragraph::new("─".repeat((inner.width.saturating_sub(1)) as usize))
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(sep2, Rect::new(inner.x, fy, inner.width, 1));
+    fy += 1;
 
-    // Validation status
-    if app.path.is_valid() {
-        lines.push(Line::from(Span::styled(
-            "Path is valid",
-            Style::default().fg(Color::Green).bold(),
-        )));
-
-        // Show total levels
-        if let Some(last) = app.path.anchors.last() {
-            lines.push(Line::from(Span::styled(
-                format!("Total: {} levels", last.nlevels),
-                Style::default().fg(Color::DarkGray),
-            )));
-        }
+    // Stretching info
+    let is_quadratic = matches!(app.export_options.stretching, StretchingType::Quadratic);
+    let stretch_info = if is_quadratic {
+        format!("[q]Quad a={:.1}", app.export_options.a_vqs0)
     } else {
-        for error in &app.path.validation_errors {
-            let error_text = match error {
-                PathError::MonotonicityViolation {
-                    at_depth,
-                    n_value,
-                    previous_n,
-                } => {
-                    format!("N={} < {} at {}m", n_value, previous_n, at_depth)
-                }
-                PathError::InsufficientAnchors => "Need 2+ anchors".to_string(),
-                PathError::InvalidCellSelected { .. } => "Invalid cell".to_string(),
-            };
-            lines.push(Line::from(Span::styled(
-                error_text,
-                Style::default().fg(Color::Red),
-            )));
-        }
-    }
-
-    // Show stretching info
-    lines.push(Line::from(""));
-    let stretch_name = match app.export_options.stretching {
-        StretchingType::S => "S-transform",
-        StretchingType::Quadratic => "Quadratic",
+        format!("[s]S θf={:.1} θb={:.1}", app.export_options.theta_f, app.export_options.theta_b)
     };
-    lines.push(Line::from(Span::styled(
-        format!("Stretch: {}", stretch_name),
-        Style::default().fg(Color::DarkGray),
-    )));
-    lines.push(Line::from(Span::styled(
-        format!(
-            "θf={:.1} θb={:.1} a={:.1}",
-            app.export_options.theta_f, app.export_options.theta_b, app.export_options.a_vqs0
-        ),
-        Style::default().fg(Color::DarkGray),
-    )));
+    let stretch_line = Paragraph::new(Line::from(vec![
+        Span::styled(stretch_info, Style::default().fg(Color::Cyan)),
+        Span::styled("  [f/F b/B v/V]", Style::default().fg(Color::DarkGray)),
+    ]));
+    frame.render_widget(stretch_line, Rect::new(inner.x, fy, inner.width, 1));
+    fy += 1;
 
-    let paragraph = Paragraph::new(lines);
-    frame.render_widget(paragraph, inner);
+    // Validation status + export
+    if app.path.is_valid() {
+        let total_levels = app.path.anchors.last().map(|a| a.nlevels).unwrap_or(0);
+        let status = Paragraph::new(Line::from(vec![
+            Span::styled("✓", Style::default().fg(Color::Green).bold()),
+            Span::styled(format!(" {} levels  ", total_levels), Style::default().fg(Color::DarkGray)),
+            Span::styled("[e] Export", Style::default().fg(Color::Green)),
+        ]));
+        frame.render_widget(status, Rect::new(inner.x, fy, inner.width, 1));
+    } else {
+        let error = if app.path.anchors.len() < 2 { "Need 2+ anchors" } else { "N↓ error" };
+        let status = Paragraph::new(error).style(Style::default().fg(Color::Red));
+        frame.render_widget(status, Rect::new(inner.x, fy, inner.width, 1));
+    }
 }

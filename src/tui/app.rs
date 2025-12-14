@@ -82,8 +82,47 @@ pub struct App {
     /// Cached path preview area for mouse hit detection
     pub preview_area: Rect,
 
+    /// Cached divider area for mouse drag detection
+    pub divider_area: Rect,
+
+    /// Scroll offset for the path preview anchor list
+    pub preview_scroll: usize,
+
+    /// Whether to show export modal
+    pub show_export_modal: bool,
+
     /// Whether the app should quit
     pub should_quit: bool,
+
+    /// Table scroll offset (row)
+    pub table_scroll_row: usize,
+
+    /// Table scroll offset (column)
+    pub table_scroll_col: usize,
+
+    /// Panel split ratio (percentage for left/table panel, 20-80)
+    pub panel_split: u16,
+
+    /// Whether we're in panel resize mode (dragging)
+    pub resizing_panels: bool,
+
+    /// Current view mode (Table or Anchors)
+    pub view_mode: ViewMode,
+
+    /// Selected anchor index in anchor view
+    pub anchor_selected: usize,
+
+    /// Edit mode for anchor view
+    pub anchor_edit_mode: AnchorEditMode,
+
+    /// Input buffer for anchor editing
+    pub anchor_input: String,
+
+    /// Temporary depth value when adding anchor (after depth entered, before N)
+    pub anchor_pending_depth: Option<f64>,
+
+    /// Pending overwrite confirmation (shows confirm dialog)
+    pub pending_overwrite: bool,
 }
 
 /// Which panel has focus
@@ -122,6 +161,8 @@ pub struct ExportOptions {
     pub a_vqs0: f64,
     pub theta_f: f64,
     pub theta_b: f64,
+    /// Minimum bottom layer thickness - prevents thin slivers at seabed
+    pub dz_bottom_min: f64,
     pub output_format: OutputFormat,
 }
 
@@ -143,6 +184,32 @@ pub enum OutputFormat {
     VgridFile,
 }
 
+/// View mode for the left panel
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum ViewMode {
+    /// Construction table view (depth × min_dz grid)
+    #[default]
+    Table,
+    /// Direct anchor list view
+    Anchors,
+}
+
+/// Edit mode for anchor view
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum AnchorEditMode {
+    /// Normal navigation
+    #[default]
+    Navigate,
+    /// Adding new anchor - entering depth
+    AddDepth,
+    /// Adding new anchor - entering N levels
+    AddLevels,
+    /// Editing existing anchor depth
+    EditDepth,
+    /// Editing existing anchor levels
+    EditLevels,
+}
+
 impl Default for ExportOptions {
     fn default() -> Self {
         Self {
@@ -150,6 +217,7 @@ impl Default for ExportOptions {
             a_vqs0: -1.0,
             theta_f: 3.0,
             theta_b: 0.5,
+            dz_bottom_min: 0.5,
             output_format: OutputFormat::CliArgs,
         }
     }
@@ -161,7 +229,14 @@ impl App {
         let mut table = ConstructionTable::new();
         let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
 
-        Self {
+        // Start in suggestion mode if mesh is loaded
+        let suggestion_mode = if mesh_info.is_some() {
+            Some(SuggestionMode::new())
+        } else {
+            None
+        };
+
+        let mut app = Self {
             table,
             path: PathSelection::new(),
             focus: Focus::Table,
@@ -171,12 +246,32 @@ impl App {
             frame: 0,
             status_message: None,
             export_options: ExportOptions::default(),
-            suggestion_mode: None,
+            suggestion_mode,
             table_area: Rect::default(),
             export_area: Rect::default(),
             preview_area: Rect::default(),
+            divider_area: Rect::default(),
+            preview_scroll: 0,
+            show_export_modal: false,
             should_quit: false,
+            table_scroll_row: 0,
+            table_scroll_col: 0,
+            panel_split: 55,
+            resizing_panels: false,
+            view_mode: ViewMode::default(),
+            anchor_selected: 0,
+            anchor_edit_mode: AnchorEditMode::default(),
+            anchor_input: String::new(),
+            anchor_pending_depth: None,
+            pending_overwrite: false,
+        };
+
+        // Compute initial suggestions if in suggestion mode
+        if app.suggestion_mode.is_some() {
+            app.compute_suggestions();
         }
+
+        app
     }
 
     /// Create app with custom initial table values
@@ -189,7 +284,14 @@ impl App {
         let mut table = ConstructionTable::with_values(depths, min_dzs);
         let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
 
-        Self {
+        // Start in suggestion mode if mesh is loaded
+        let suggestion_mode = if mesh_info.is_some() {
+            Some(SuggestionMode::new())
+        } else {
+            None
+        };
+
+        let mut app = Self {
             table,
             path: PathSelection::new(),
             focus: Focus::Table,
@@ -199,12 +301,32 @@ impl App {
             frame: 0,
             status_message: None,
             export_options: ExportOptions::default(),
-            suggestion_mode: None,
+            suggestion_mode,
             table_area: Rect::default(),
             export_area: Rect::default(),
             preview_area: Rect::default(),
+            divider_area: Rect::default(),
+            preview_scroll: 0,
+            show_export_modal: false,
             should_quit: false,
+            table_scroll_row: 0,
+            table_scroll_col: 0,
+            panel_split: 55,
+            resizing_panels: false,
+            view_mode: ViewMode::default(),
+            anchor_selected: 0,
+            anchor_edit_mode: AnchorEditMode::default(),
+            anchor_input: String::new(),
+            anchor_pending_depth: None,
+            pending_overwrite: false,
+        };
+
+        // Compute initial suggestions if in suggestion mode
+        if app.suggestion_mode.is_some() {
+            app.compute_suggestions();
         }
+
+        app
     }
 
     /// Recompute suggestions based on current algorithm and parameters
@@ -316,12 +438,48 @@ impl App {
                 self.show_help = false;
                 return;
             }
+            // Panel resize: { shrinks table, } expands table
+            KeyCode::Char('{') => {
+                self.panel_split = self.panel_split.saturating_sub(5).max(20);
+                return;
+            }
+            KeyCode::Char('}') => {
+                self.panel_split = (self.panel_split + 5).min(80);
+                return;
+            }
+            // View toggle: v switches between Table and Anchors view
+            KeyCode::Char('v') if self.suggestion_mode.is_none()
+                && self.table.edit_mode == EditMode::Navigate
+                && self.anchor_edit_mode == AnchorEditMode::Navigate => {
+                self.view_mode = match self.view_mode {
+                    ViewMode::Table => ViewMode::Anchors,
+                    ViewMode::Anchors => ViewMode::Table,
+                };
+                let mode_name = match self.view_mode {
+                    ViewMode::Table => "Table",
+                    ViewMode::Anchors => "Anchors",
+                };
+                self.set_status(format!("View: {}", mode_name), StatusLevel::Info);
+                return;
+            }
             _ => {}
         }
 
-        // Handle based on edit mode first
+        // Handle based on edit mode first (table)
         if self.table.edit_mode != EditMode::Navigate {
             self.handle_edit_mode_key(key);
+            return;
+        }
+
+        // Handle anchor edit mode
+        if self.anchor_edit_mode != AnchorEditMode::Navigate {
+            self.handle_anchor_edit_mode_key(key);
+            return;
+        }
+
+        // Handle export modal if active
+        if self.show_export_modal {
+            self.handle_export_modal_key(key);
             return;
         }
 
@@ -331,11 +489,72 @@ impl App {
             return;
         }
 
-        // Handle based on focus
+        // Handle based on focus and view mode
         match self.focus {
-            Focus::Table => self.handle_table_key(key),
+            Focus::Table => {
+                match self.view_mode {
+                    ViewMode::Table => self.handle_table_key(key),
+                    ViewMode::Anchors => self.handle_anchor_view_key(key),
+                }
+            }
             Focus::PathPreview => self.handle_preview_key(key),
             Focus::Export => self.handle_export_key(key),
+        }
+    }
+
+    /// Handle keyboard input in export modal
+    fn handle_export_modal_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.show_export_modal = false;
+                self.pending_overwrite = false;
+            }
+            KeyCode::Char('1') => {
+                if self.path.is_valid() {
+                    let output = self.generate_cli_args();
+                    self.show_export_modal = false;
+                    self.set_status(format!("CLI: {}", output), StatusLevel::Success);
+                }
+            }
+            KeyCode::Char('2') => {
+                if self.path.is_valid() {
+                    let output = self.generate_yaml();
+                    self.show_export_modal = false;
+                    self.set_status(format!("YAML copied to status. Use --output to save."), StatusLevel::Success);
+                    // Print to stderr so it can be captured
+                    eprintln!("\n{}", output);
+                }
+            }
+            KeyCode::Char('3') | KeyCode::Enter => {
+                if self.path.is_valid() && self.mesh_info.is_some() {
+                    let output_path = self.output_dir.join("vgrid.in");
+                    if output_path.exists() {
+                        // File exists - ask for confirmation
+                        self.pending_overwrite = true;
+                    } else {
+                        // File doesn't exist - proceed directly
+                        self.export_options.output_format = OutputFormat::VgridFile;
+                        self.show_export_modal = false;
+                        self.perform_export();
+                    }
+                } else if !self.path.is_valid() {
+                    self.set_status("Cannot export: path is invalid", StatusLevel::Error);
+                } else {
+                    self.set_status("Cannot export: no hgrid loaded (use -g flag)", StatusLevel::Error);
+                }
+            }
+            // Handle overwrite confirmation
+            KeyCode::Char('y') | KeyCode::Char('Y') if self.pending_overwrite => {
+                self.pending_overwrite = false;
+                self.export_options.output_format = OutputFormat::VgridFile;
+                self.show_export_modal = false;
+                self.perform_export();
+            }
+            KeyCode::Char('n') | KeyCode::Char('N') if self.pending_overwrite => {
+                self.pending_overwrite = false;
+                self.set_status("Export cancelled", StatusLevel::Info);
+            }
+            _ => {}
         }
     }
 
@@ -346,6 +565,14 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
+                // Check if clicking on divider for resize
+                if self.is_in_rect(x, y, self.divider_area) ||
+                   (x > 0 && self.is_in_rect(x - 1, y, self.divider_area)) ||
+                   self.is_in_rect(x + 1, y, self.divider_area) {
+                    self.resizing_panels = true;
+                    return;
+                }
+
                 // Check which panel was clicked
                 if self.is_in_rect(x, y, self.table_area) {
                     self.focus = Focus::Table;
@@ -371,11 +598,46 @@ impl App {
                     self.handle_preview_click(x, y);
                 }
             }
+            MouseEventKind::Up(MouseButton::Left) => {
+                self.resizing_panels = false;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                if self.resizing_panels {
+                    // Calculate new split percentage based on mouse position
+                    // We need to know the total width of the body area
+                    // The divider_area x position tells us where we are
+                    let body_start = self.table_area.x.saturating_sub(1); // Account for border
+                    let body_width = self.table_area.width + self.divider_area.width + self.preview_area.width + 2;
+                    if body_width > 0 {
+                        let rel_x = x.saturating_sub(body_start);
+                        let new_split = ((rel_x as u32 * 100) / body_width as u32) as u16;
+                        self.panel_split = new_split.clamp(20, 80);
+                    }
+                }
+            }
             MouseEventKind::ScrollUp => {
-                self.table.cursor_up();
+                // Scroll based on which panel is under cursor
+                if self.is_in_rect(x, y, self.preview_area) {
+                    if self.preview_scroll > 0 {
+                        self.preview_scroll -= 1;
+                    }
+                } else if self.is_in_rect(x, y, self.table_area) {
+                    // Scroll table vertically
+                    if self.table_scroll_row > 0 {
+                        self.table_scroll_row -= 1;
+                    }
+                }
             }
             MouseEventKind::ScrollDown => {
-                self.table.cursor_down();
+                if self.is_in_rect(x, y, self.preview_area) {
+                    let max_scroll = self.path.anchors.len().saturating_sub(1);
+                    if self.preview_scroll < max_scroll {
+                        self.preview_scroll += 1;
+                    }
+                } else if self.is_in_rect(x, y, self.table_area) {
+                    // Scroll table vertically
+                    self.table_scroll_row += 1; // Will be clamped in render
+                }
             }
             _ => {}
         }
@@ -545,9 +807,9 @@ impl App {
                 self.focus = Focus::Export;
             }
 
-            // Export shortcut
+            // Export modal
             KeyCode::Char('e') => {
-                self.focus = Focus::Export;
+                self.show_export_modal = true;
             }
 
             // Enter suggestion mode (requires loaded mesh)
@@ -679,72 +941,281 @@ impl App {
         }
     }
 
-    fn handle_preview_key(&mut self, key: KeyEvent) {
+    /// Handle keyboard input in anchor view (navigation mode)
+    fn handle_anchor_view_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Tab => self.focus = Focus::Export,
-            KeyCode::BackTab => self.focus = Focus::Table,
-            KeyCode::Esc => self.focus = Focus::Table,
+            // Navigation
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.anchor_selected > 0 {
+                    self.anchor_selected -= 1;
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if !self.path.anchors.is_empty() && self.anchor_selected < self.path.anchors.len() - 1 {
+                    self.anchor_selected += 1;
+                }
+            }
+            KeyCode::Home => self.anchor_selected = 0,
+            KeyCode::End => {
+                if !self.path.anchors.is_empty() {
+                    self.anchor_selected = self.path.anchors.len() - 1;
+                }
+            }
+
+            // Add new anchor
+            KeyCode::Char('a') => {
+                self.anchor_edit_mode = AnchorEditMode::AddDepth;
+                self.anchor_input.clear();
+                self.anchor_pending_depth = None;
+                self.set_status("Enter depth (m):", StatusLevel::Info);
+            }
+
+            // Delete selected anchor
+            KeyCode::Char('d') => {
+                if !self.path.anchors.is_empty() {
+                    let idx = self.anchor_selected;
+                    self.path.anchors.remove(idx);
+                    // Adjust selection
+                    if self.anchor_selected >= self.path.anchors.len() && self.anchor_selected > 0 {
+                        self.anchor_selected -= 1;
+                    }
+                    self.path.validate();
+                    self.set_status("Anchor deleted", StatusLevel::Info);
+                } else {
+                    self.set_status("No anchors to delete", StatusLevel::Warning);
+                }
+            }
+
+            // Edit selected anchor
+            KeyCode::Char('e') | KeyCode::Enter => {
+                if !self.path.anchors.is_empty() {
+                    self.anchor_edit_mode = AnchorEditMode::EditDepth;
+                    let anchor = &self.path.anchors[self.anchor_selected];
+                    self.anchor_input = format!("{:.1}", anchor.depth);
+                    self.set_status("Edit depth (Enter to keep, then N):", StatusLevel::Info);
+                }
+            }
+
+            // Clear all anchors
+            KeyCode::Char('c') => {
+                self.path.clear();
+                self.anchor_selected = 0;
+                self.set_status("All anchors cleared", StatusLevel::Info);
+            }
+
+            // Focus change
+            KeyCode::Tab => {
+                self.focus = Focus::PathPreview;
+            }
+            KeyCode::BackTab => {
+                self.focus = Focus::Export;
+            }
+
+            // Export modal (use E since e is for edit)
+            KeyCode::Char('E') => {
+                self.show_export_modal = true;
+            }
+
+            // Enter suggestion mode
+            KeyCode::Char('S') => {
+                if self.mesh_info.is_some() {
+                    let mode = SuggestionMode::new();
+                    self.suggestion_mode = Some(mode);
+                    self.compute_suggestions();
+                    self.set_status("Suggestion mode", StatusLevel::Info);
+                } else {
+                    self.set_status("Suggestions require mesh (-g)", StatusLevel::Warning);
+                }
+            }
+
             _ => {}
         }
     }
 
-    fn handle_export_key(&mut self, key: KeyEvent) {
+    /// Handle keyboard input when editing an anchor
+    fn handle_anchor_edit_mode_key(&mut self, key: KeyEvent) {
         match key.code {
-            KeyCode::Tab => self.focus = Focus::Table,
-            KeyCode::BackTab => self.focus = Focus::PathPreview,
-            KeyCode::Esc => self.focus = Focus::Table,
-            KeyCode::Char('1') => {
-                self.export_options.output_format = OutputFormat::CliArgs;
-                self.set_status("Format: CLI Arguments", StatusLevel::Info);
-            }
-            KeyCode::Char('2') => {
-                self.export_options.output_format = OutputFormat::Yaml;
-                self.set_status("Format: YAML Config", StatusLevel::Info);
-            }
-            KeyCode::Char('3') => {
-                self.export_options.output_format = OutputFormat::VgridFile;
-                self.set_status("Format: vgrid.in File", StatusLevel::Info);
-            }
-            KeyCode::Char('s') => {
-                self.export_options.stretching = StretchingType::S;
-                self.set_status("Stretching: S-transform", StatusLevel::Info);
-            }
-            KeyCode::Char('q') => {
-                self.export_options.stretching = StretchingType::Quadratic;
-                self.set_status("Stretching: Quadratic", StatusLevel::Info);
-            }
-            // theta_f adjustment (surface/bottom focusing intensity)
-            KeyCode::Char('f') => {
-                self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
-                self.set_status(format!("theta_f: {:.1}", self.export_options.theta_f), StatusLevel::Info);
-            }
-            KeyCode::Char('F') => {
-                self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
-                self.set_status(format!("theta_f: {:.1}", self.export_options.theta_f), StatusLevel::Info);
-            }
-            // theta_b adjustment (bottom layer focusing)
-            KeyCode::Char('b') => {
-                self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
-                self.set_status(format!("theta_b: {:.1}", self.export_options.theta_b), StatusLevel::Info);
-            }
-            KeyCode::Char('B') => {
-                self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
-                self.set_status(format!("theta_b: {:.1}", self.export_options.theta_b), StatusLevel::Info);
-            }
-            // a_vqs0 adjustment (stretching amplitude)
-            KeyCode::Char('v') => {
-                self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
-                self.set_status(format!("a_vqs0: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
-            }
-            KeyCode::Char('V') => {
-                self.export_options.a_vqs0 = (self.export_options.a_vqs0 - 0.1).max(-1.0);
-                self.set_status(format!("a_vqs0: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
+            KeyCode::Esc => {
+                self.anchor_edit_mode = AnchorEditMode::Navigate;
+                self.anchor_input.clear();
+                self.anchor_pending_depth = None;
+                self.status_message = None;
             }
             KeyCode::Enter => {
-                self.perform_export();
+                self.commit_anchor_edit();
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                self.anchor_input.push(c);
+            }
+            KeyCode::Backspace => {
+                self.anchor_input.pop();
             }
             _ => {}
         }
+    }
+
+    /// Commit the current anchor edit
+    fn commit_anchor_edit(&mut self) {
+        match self.anchor_edit_mode {
+            AnchorEditMode::AddDepth => {
+                // Parse depth, then prompt for N
+                if let Ok(depth) = self.anchor_input.parse::<f64>() {
+                    if depth > 0.0 {
+                        self.anchor_pending_depth = Some(depth);
+                        self.anchor_edit_mode = AnchorEditMode::AddLevels;
+                        self.anchor_input.clear();
+                        self.set_status(format!("Depth: {:.1}m. Enter N levels:", depth), StatusLevel::Info);
+                        return;
+                    } else {
+                        self.set_status("Depth must be positive", StatusLevel::Error);
+                    }
+                } else if !self.anchor_input.is_empty() {
+                    self.set_status("Invalid number format", StatusLevel::Error);
+                }
+            }
+            AnchorEditMode::AddLevels => {
+                // Parse N levels, add the anchor
+                if let (Some(depth), Ok(nlevels)) = (self.anchor_pending_depth, self.anchor_input.parse::<usize>()) {
+                    if nlevels >= 2 {
+                        // Add anchor directly to path (not through table)
+                        self.path.add_direct_anchor(depth, nlevels);
+                        self.path.validate();
+                        // Select the new anchor
+                        if let Some(idx) = self.path.anchors.iter().position(|a| (a.depth - depth).abs() < 0.001) {
+                            self.anchor_selected = idx;
+                        }
+                        self.set_status(format!("Added anchor: {:.1}m, {} levels", depth, nlevels), StatusLevel::Success);
+                    } else {
+                        self.set_status("N must be >= 2", StatusLevel::Error);
+                        return;
+                    }
+                } else if !self.anchor_input.is_empty() {
+                    self.set_status("Invalid number format", StatusLevel::Error);
+                    return;
+                }
+            }
+            AnchorEditMode::EditDepth => {
+                // Parse new depth, then prompt for N
+                if let Ok(depth) = self.anchor_input.parse::<f64>() {
+                    if depth > 0.0 {
+                        self.anchor_pending_depth = Some(depth);
+                        self.anchor_edit_mode = AnchorEditMode::EditLevels;
+                        // Pre-fill with current N
+                        let current_n = self.path.anchors.get(self.anchor_selected).map(|a| a.nlevels).unwrap_or(2);
+                        self.anchor_input = current_n.to_string();
+                        self.set_status(format!("Depth: {:.1}m. Edit N levels:", depth), StatusLevel::Info);
+                        return;
+                    } else {
+                        self.set_status("Depth must be positive", StatusLevel::Error);
+                    }
+                } else if !self.anchor_input.is_empty() {
+                    self.set_status("Invalid number format", StatusLevel::Error);
+                }
+            }
+            AnchorEditMode::EditLevels => {
+                // Parse N levels, update the anchor
+                if let (Some(depth), Ok(nlevels)) = (self.anchor_pending_depth, self.anchor_input.parse::<usize>()) {
+                    if nlevels >= 2 {
+                        if let Some(anchor) = self.path.anchors.get_mut(self.anchor_selected) {
+                            anchor.depth = depth;
+                            anchor.nlevels = nlevels;
+                            // Clear table indices since this is now a direct anchor
+                            anchor.depth_idx = usize::MAX;
+                            anchor.dz_idx = usize::MAX;
+                        }
+                        self.path.validate();
+                        self.set_status(format!("Updated anchor: {:.1}m, {} levels", depth, nlevels), StatusLevel::Success);
+                    } else {
+                        self.set_status("N must be >= 2", StatusLevel::Error);
+                        return;
+                    }
+                } else if !self.anchor_input.is_empty() {
+                    self.set_status("Invalid number format", StatusLevel::Error);
+                    return;
+                }
+            }
+            AnchorEditMode::Navigate => {}
+        }
+
+        // Reset edit state
+        self.anchor_edit_mode = AnchorEditMode::Navigate;
+        self.anchor_input.clear();
+        self.anchor_pending_depth = None;
+    }
+
+    fn handle_preview_key(&mut self, key: KeyEvent) {
+        match key.code {
+            // Navigation
+            KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Table,
+            KeyCode::Esc => self.focus = Focus::Table,
+            // Scroll up
+            KeyCode::Up | KeyCode::Char('k') => {
+                if self.preview_scroll > 0 {
+                    self.preview_scroll -= 1;
+                }
+            }
+            // Scroll down
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max_scroll = self.path.anchors.len().saturating_sub(1);
+                if self.preview_scroll < max_scroll {
+                    self.preview_scroll += 1;
+                }
+            }
+            KeyCode::PageUp => {
+                self.preview_scroll = self.preview_scroll.saturating_sub(5);
+            }
+            KeyCode::PageDown => {
+                let max_scroll = self.path.anchors.len().saturating_sub(1);
+                self.preview_scroll = (self.preview_scroll + 5).min(max_scroll);
+            }
+            KeyCode::Home => self.preview_scroll = 0,
+            KeyCode::End => self.preview_scroll = self.path.anchors.len().saturating_sub(1),
+            // Stretching controls (integrated)
+            KeyCode::Char('s') => {
+                self.export_options.stretching = StretchingType::S;
+                self.set_status("S-transform", StatusLevel::Info);
+            }
+            KeyCode::Char('q') => {
+                self.export_options.stretching = StretchingType::Quadratic;
+                self.set_status("Quadratic", StatusLevel::Info);
+            }
+            KeyCode::Char('f') => {
+                self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
+                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
+            }
+            KeyCode::Char('F') => {
+                self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
+                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
+            }
+            KeyCode::Char('b') => {
+                self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
+                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
+            }
+            KeyCode::Char('B') => {
+                self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
+                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
+            }
+            KeyCode::Char('v') => {
+                self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
+                self.set_status(format!("a: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
+            }
+            KeyCode::Char('V') => {
+                self.export_options.a_vqs0 = (self.export_options.a_vqs0 - 0.1).max(-1.0);
+                self.set_status(format!("a: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
+            }
+            // Export
+            KeyCode::Char('e') => {
+                self.show_export_modal = true;
+            }
+            _ => {}
+        }
+    }
+
+    // Note: handle_export_key is kept for backwards compatibility but
+    // Export panel is now integrated into PathPreview
+    fn handle_export_key(&mut self, key: KeyEvent) {
+        // Redirect to preview handler since Export is now integrated
+        self.handle_preview_key(key);
     }
 
     /// Handle keyboard input in suggestion mode
@@ -761,47 +1232,56 @@ impl App {
             if let Some(mode) = self.suggestion_mode.take() {
                 self.path.clear();
 
-                for anchor in &mode.preview {
-                    // Find the closest depth row in the table
-                    let depth_idx = self
-                        .table
-                        .depths
-                        .iter()
-                        .enumerate()
-                        .min_by(|(_, a), (_, b)| {
-                            let da = (*a - anchor.depth).abs();
-                            let db = (*b - anchor.depth).abs();
-                            da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
-                        .unwrap_or(0);
+                // First pass: add all depths and calculate dz values
+                // We need to do this in two passes because adding depths/dz columns
+                // changes indices, so we need to add all values first, then find indices
+                let mut anchor_data: Vec<(f64, f64, usize)> = Vec::new(); // (depth, implied_dz, nlevels)
 
-                    // Find a suitable column based on implied dz
+                for anchor in &mode.preview {
+                    // Calculate the implied dz from the suggestion
+                    // The formula: depth = (nlevels - 1) * dz, so dz = depth / (nlevels - 1)
                     let implied_dz = if anchor.nlevels > 1 {
                         anchor.depth / (anchor.nlevels - 1) as f64
                     } else {
                         anchor.depth
                     };
 
-                    let col_idx = self
+                    // Add exact depth to table (will be ignored if duplicate)
+                    self.table.add_depth(anchor.depth);
+
+                    // Add the implied dz column (will be ignored if duplicate)
+                    // Round to 2 decimal places for cleaner display
+                    let rounded_dz = (implied_dz * 100.0).round() / 100.0;
+                    self.table.add_min_dz(rounded_dz);
+
+                    anchor_data.push((anchor.depth, rounded_dz, anchor.nlevels));
+                }
+
+                // Second pass: find exact indices and add anchors to path
+                for (depth, dz, nlevels) in anchor_data {
+                    // Find exact depth index (using tolerance for floating point)
+                    let depth_idx = self
+                        .table
+                        .depths
+                        .iter()
+                        .position(|&d| (d - depth).abs() < 0.001)
+                        .unwrap_or(0);
+
+                    // Find exact dz index (using tolerance for floating point)
+                    let dz_idx = self
                         .table
                         .min_dzs
                         .iter()
-                        .enumerate()
-                        .filter(|(_, &dz)| dz <= implied_dz)
-                        .max_by(|(_, a), (_, b)| {
-                            a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                        })
-                        .map(|(i, _)| i)
+                        .position(|&d| (d - dz).abs() < 0.001)
                         .unwrap_or(0);
 
-                    // Add anchor to path
-                    self.path.add_anchor(depth_idx, col_idx, anchor.depth, anchor.nlevels);
+                    // Add anchor to path with exact values
+                    self.path.add_anchor(depth_idx, dz_idx, depth, nlevels);
                 }
 
                 let count = mode.preview.len();
                 self.set_status(
-                    format!("Applied {} suggested anchors", count),
+                    format!("Applied {} anchors (table updated)", count),
                     StatusLevel::Success,
                 );
             }
@@ -975,6 +1455,16 @@ impl App {
                 }
             }
 
+            // Adjust dz_bottom_min: Z/z = increase/decrease (no upper cap)
+            KeyCode::Char('Z') => {
+                self.export_options.dz_bottom_min += 0.1;
+                Some((format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info))
+            }
+            KeyCode::Char('z') => {
+                self.export_options.dz_bottom_min = (self.export_options.dz_bottom_min - 0.1).max(0.1);
+                Some((format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info))
+            }
+
             _ => None,
         };
 
@@ -1103,7 +1593,7 @@ impl App {
                 let theta_f = self.export_options.theta_f;
                 let theta_b = self.export_options.theta_b;
                 let skew_decay_rate = 0.03;
-                let dz_bottom_min = 0.3;
+                let dz_bottom_min = self.export_options.dz_bottom_min;
 
                 let result = match self.export_options.stretching {
                     StretchingType::S => {
