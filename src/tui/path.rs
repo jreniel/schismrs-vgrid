@@ -57,6 +57,11 @@ impl PathSelection {
 
     /// Attempt to toggle an anchor point at the given cell
     /// Returns true if the action was performed
+    ///
+    /// Behavior:
+    /// - If clicking exact same cell (same row AND column): deselect
+    /// - If clicking different column at same depth: switch to new column
+    /// - If clicking new depth: add anchor at that depth
     pub fn toggle_anchor(&mut self, table: &ConstructionTable, row: usize, col: usize) -> bool {
         // Check bounds
         if row >= table.depths.len() || col >= table.min_dzs.len() {
@@ -73,14 +78,23 @@ impl PathSelection {
         let depth = table.depths[row];
         let nlevels = cell.n;
 
-        // Check if already selected at this depth - if so, remove
+        // Check if already selected at this depth
         if let Some(idx) = self.anchors.iter().position(|a| a.depth_idx == row) {
-            self.anchors.remove(idx);
-            self.validate();
-            return true;
+            // If exact same cell (same row AND column), deselect
+            if self.anchors[idx].dz_idx == col {
+                self.anchors.remove(idx);
+                self.validate();
+                return true;
+            } else {
+                // Different column at same depth - switch to new column
+                self.anchors[idx].dz_idx = col;
+                self.anchors[idx].nlevels = nlevels;
+                self.validate();
+                return true;
+            }
         }
 
-        // Add new anchor
+        // Add new anchor at new depth
         let anchor = PathAnchor {
             depth_idx: row,
             dz_idx: col,
@@ -190,6 +204,32 @@ impl PathSelection {
         let anchor = PathAnchor {
             depth_idx,
             dz_idx,
+            depth,
+            nlevels,
+        };
+
+        // Insert in sorted order by depth
+        let insert_pos = self
+            .anchors
+            .iter()
+            .position(|a| a.depth > depth)
+            .unwrap_or(self.anchors.len());
+        self.anchors.insert(insert_pos, anchor);
+
+        self.validate();
+    }
+
+    /// Add an anchor with arbitrary depth/nlevels (not tied to table)
+    /// Used for direct anchor editing in anchor view
+    pub fn add_direct_anchor(&mut self, depth: f64, nlevels: usize) {
+        // Check if already have an anchor at this depth (within tolerance)
+        if self.anchors.iter().any(|a| (a.depth - depth).abs() < 0.001) {
+            return;
+        }
+
+        let anchor = PathAnchor {
+            depth_idx: usize::MAX, // Marker for "not from table"
+            dz_idx: usize::MAX,
             depth,
             nlevels,
         };
