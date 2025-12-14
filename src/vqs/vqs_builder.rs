@@ -307,11 +307,16 @@ impl<'a> VQSBuilder<'a> {
             }
 
             if depth <= 0.0 {
-                // Dry node
+                // Dry node - still needs minimal 2-level structure
+                // Surface = 0, Bottom = -1 (SCHISM convention)
                 if node_idx < 5 {
-                    debug!("  Node {} is dry (depth = {:.3})", node_idx, depth);
+                    debug!("  Node {} is dry (depth = {:.3}) - using 2-level structure", node_idx, depth);
                 }
-                kbp[node_idx] = 0;
+                kbp[node_idx] = 2;
+                sigma[[0, node_idx]] = 0.0;  // Surface
+                sigma[[1, node_idx]] = -1.0; // Bottom
+                z_coords[[0, node_idx]] = elevations[node_idx];
+                z_coords[[1, node_idx]] = elevations[node_idx]; // Both at surface for dry nodes
                 continue;
             }
 
