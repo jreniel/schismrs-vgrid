@@ -129,9 +129,8 @@ fn suggest_exponential(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor
         }];
     }
 
-    // First anchor depth is dz_surf (but not shallower than mesh minimum)
-    // dz_surf represents the target surface layer thickness
-    let start = params.dz_surf.max(mesh.min_depth).max(0.1);
+    // First anchor depth is dz_surf (user-controlled, no constraints)
+    let start = params.dz_surf;
     let end = mesh.max_depth;
     let scale = (end / start).powf(1.0 / (n as f64 - 1.0));
 
@@ -175,8 +174,8 @@ fn suggest_uniform(mesh: &MeshInfo, params: &SuggestionParams) -> Vec<Anchor> {
         }];
     }
 
-    // First anchor depth is dz_surf (but not shallower than mesh minimum)
-    let start = params.dz_surf.max(mesh.min_depth).max(0.1);
+    // First anchor depth is dz_surf (user-controlled, no constraints)
+    let start = params.dz_surf;
     let end = mesh.max_depth;
     let depth_step = (end - start) / (n - 1) as f64;
     let level_step = (params.target_levels - params.shallow_levels) as f64 / (n - 1) as f64;
@@ -266,6 +265,39 @@ impl SuggestionMode {
         }
     }
 
+    /// Create new suggestion mode initialized from mesh info
+    /// - dz_surf defaults to 10th percentile of mesh depths
+    pub fn new_from_mesh(percentile_10: f64) -> Self {
+        Self {
+            algorithm: SuggestionAlgorithm::default(),
+            params: SuggestionParams {
+                dz_surf: percentile_10,
+                ..SuggestionParams::default()
+            },
+            preview: Vec::new(),
+        }
+    }
+
+    /// Initialize/update params from existing anchors
+    /// This syncs the suggestion state with the current anchor table
+    pub fn sync_from_anchors(&mut self, anchors: &[(f64, usize)]) {
+        if anchors.is_empty() {
+            return;
+        }
+
+        // Derive params from existing anchors
+        self.params.num_anchors = anchors.len();
+        self.params.target_levels = anchors.last().map(|a| a.1).unwrap_or(30);
+        self.params.shallow_levels = anchors.first().map(|a| a.1).unwrap_or(2);
+        self.params.dz_surf = anchors.first().map(|a| a.0).unwrap_or(0.5);
+
+        // Copy anchors to preview
+        self.preview = anchors
+            .iter()
+            .map(|&(depth, nlevels)| Anchor { depth, nlevels })
+            .collect();
+    }
+
     /// Update preview synchronously
     pub fn update_preview(&mut self, mesh: &MeshInfo) {
         self.preview = self.algorithm.suggest(mesh, &self.params);
@@ -288,8 +320,9 @@ impl SuggestionMode {
     }
 
     /// Adjust dz_surf (target surface layer thickness)
-    pub fn adjust_dz_surf(&mut self, delta: f64) {
-        let new_val = (self.params.dz_surf + delta).max(0.1);
+    /// Floor is the minimum allowed value (typically min_wet_depth from mesh)
+    pub fn adjust_dz_surf(&mut self, delta: f64, floor: f64) {
+        let new_val = (self.params.dz_surf + delta).max(floor.max(0.001));
         self.params.dz_surf = new_val;
     }
 

@@ -32,8 +32,10 @@ pub struct MeshInfo {
     pub hgrid: Hgrid,
     /// Number of nodes in the mesh
     pub node_count: usize,
-    /// Minimum depth (excluding dry nodes)
+    /// Minimum depth for S-transform reference (10th percentile, floored at 0.1m)
     pub min_depth: f64,
+    /// Smallest positive wet node depth (absolute minimum)
+    pub min_wet_depth: f64,
     /// Maximum depth
     pub max_depth: f64,
     /// Mean depth
@@ -73,8 +75,11 @@ pub struct App {
     /// Export options
     pub export_options: ExportOptions,
 
-    /// Suggestion mode state (None = not in suggestion mode)
+    /// Suggestion mode state (persistent, keeps params across toggles)
     pub suggestion_mode: Option<SuggestionMode>,
+
+    /// Whether suggestion panel is visible (toggled with S key)
+    pub suggestion_visible: bool,
 
     /// Cached table area for mouse hit detection
     pub table_area: Rect,
@@ -173,6 +178,8 @@ pub struct CachedZoneStats {
 /// Cached single-depth profile data with invalidation key
 #[derive(Clone, Debug)]
 pub struct CachedProfileData {
+    /// Z-coordinates (depths) for each level
+    pub z_coords: Vec<f64>,
     /// Layer thicknesses
     pub thicknesses: Vec<f64>,
     /// Truncation info
@@ -338,12 +345,13 @@ impl App {
         let mut table = ConstructionTable::new();
         let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
 
-        // Start in suggestion mode if mesh is loaded
-        let suggestion_mode = if mesh_info.is_some() {
-            Some(SuggestionMode::new())
-        } else {
-            None
-        };
+        // Start in suggestion mode if mesh is loaded, with dz_surf defaulting to 10th percentile
+        let suggestion_mode = mesh_info.as_ref().map(|mesh| {
+            SuggestionMode::new_from_mesh(mesh.percentiles[0])
+        });
+
+        // Start with suggestions visible if mesh is loaded
+        let suggestion_visible = suggestion_mode.is_some();
 
         let mut app = Self {
             table,
@@ -356,6 +364,7 @@ impl App {
             status_message: None,
             export_options: ExportOptions::default(),
             suggestion_mode,
+            suggestion_visible,
             table_area: Rect::default(),
             export_area: Rect::default(),
             preview_area: Rect::default(),
@@ -381,12 +390,19 @@ impl App {
             cached_truncation_data: std::cell::RefCell::new(None),
         };
 
-        // Compute initial suggestions if in suggestion mode
-        if app.suggestion_mode.is_some() {
+        // Compute initial suggestions if visible
+        if app.suggestion_visible {
             app.compute_suggestions();
         }
 
         app
+    }
+
+    /// Clear all cached data to force recomputation
+    pub fn clear_caches(&mut self) {
+        *self.cached_zone_stats.borrow_mut() = None;
+        *self.cached_profile_data.borrow_mut() = None;
+        *self.cached_truncation_data.borrow_mut() = None;
     }
 
     /// Create app with custom initial anchor values
@@ -399,12 +415,10 @@ impl App {
         let mut table = ConstructionTable::new();
         let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
 
-        // Start in suggestion mode if mesh is loaded
-        let suggestion_mode = if mesh_info.is_some() {
-            Some(SuggestionMode::new())
-        } else {
-            None
-        };
+        // Create suggestion mode if mesh is loaded, but don't show it (we have explicit anchors)
+        let suggestion_mode = mesh_info.as_ref().map(|mesh| {
+            SuggestionMode::new_from_mesh(mesh.percentiles[0])
+        });
 
         let mut app = Self {
             table,
@@ -417,6 +431,7 @@ impl App {
             status_message: None,
             export_options: ExportOptions::default(),
             suggestion_mode,
+            suggestion_visible: false, // Don't show suggestions when anchors provided
             table_area: Rect::default(),
             export_area: Rect::default(),
             preview_area: Rect::default(),
@@ -448,11 +463,6 @@ impl App {
         }
         app.path.validate();
 
-        // Compute initial suggestions if in suggestion mode
-        if app.suggestion_mode.is_some() {
-            app.compute_suggestions();
-        }
-
         app
     }
 
@@ -480,27 +490,32 @@ impl App {
             }
         };
 
-        // Get depths (positive-down convention: positive values = underwater)
-        let depths: Vec<f64> = hgrid
-            .depths()
+        // Get ALL depths from mesh in positive-down convention
+        let all_depths = hgrid.depths_positive_down();
+
+        // Filter to ONLY positive values (underwater nodes)
+        // This explicitly excludes zero and negative depths (dry/land nodes)
+        let positive_depths: Vec<f64> = all_depths
             .iter()
-            .filter(|&&d| d > 0.0) // Only underwater nodes
             .copied()
+            .filter(|&d| d > 0.0)
             .collect();
 
-        if depths.is_empty() {
-            eprintln!("Warning: No underwater nodes found in hgrid");
+        if positive_depths.is_empty() {
+            eprintln!("Warning: No underwater nodes found in hgrid (no positive depths)");
             return None;
         }
 
-        let node_count = depths.len();
-        let min_depth = depths.iter().cloned().fold(f64::INFINITY, f64::min);
-        let max_depth = depths.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
-        let mean_depth = depths.iter().sum::<f64>() / depths.len() as f64;
+        let node_count = positive_depths.len();
+        let max_depth = positive_depths.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+        let mean_depth = positive_depths.iter().sum::<f64>() / positive_depths.len() as f64;
 
-        // Compute percentiles
-        let mut sorted_depths = depths.clone();
+        // Sort depths to compute percentiles
+        let mut sorted_depths = positive_depths.clone();
         sorted_depths.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+
+        // Smallest positive wet node depth (absolute minimum)
+        let min_wet_depth = sorted_depths[0];
 
         let percentile = |p: f64| -> f64 {
             let idx = (p * (sorted_depths.len() - 1) as f64) as usize;
@@ -515,6 +530,12 @@ impl App {
             percentile(0.90), // 90%
         ];
 
+        // Use 10th percentile as min_depth for S-transform reference (h_s)
+        // The absolute minimum can be extremely small (e.g., 0.00001m for tidal flats)
+        // which makes S-transform degenerate to uniform layers.
+        // The 10th percentile provides a more representative "shallow water" reference.
+        let min_depth = percentiles[0].max(0.1); // 10th percentile, floor at 0.1m
+
         let median_depth = percentiles[2];
 
         // Constrain the table to the mesh depth range
@@ -525,6 +546,7 @@ impl App {
             hgrid,
             node_count,
             min_depth,
+            min_wet_depth,
             max_depth,
             mean_depth,
             median_depth,
@@ -620,8 +642,8 @@ impl App {
             return;
         }
 
-        // Handle suggestion mode if active
-        if self.suggestion_mode.is_some() {
+        // Handle suggestion mode if visible
+        if self.suggestion_visible {
             self.handle_suggestion_mode_key(key);
             return;
         }
@@ -1059,15 +1081,30 @@ impl App {
                 self.show_export_modal = true;
             }
 
-            // Enter suggestion mode
+            // Toggle suggestion mode
             KeyCode::Char('S') => {
-                if self.mesh_info.is_some() {
-                    let mode = SuggestionMode::new();
-                    self.suggestion_mode = Some(mode);
-                    self.compute_suggestions();
-                    self.set_status("Suggestion mode", StatusLevel::Info);
-                } else {
+                if self.mesh_info.is_none() {
                     self.set_status("Suggestions require mesh (-g)", StatusLevel::Warning);
+                } else if self.suggestion_visible {
+                    // Hide suggestions
+                    self.suggestion_visible = false;
+                    self.set_status("Suggestions hidden", StatusLevel::Info);
+                } else {
+                    // Show suggestions - sync from current anchors if we have any
+                    self.suggestion_visible = true;
+
+                    // Sync suggestion params from current anchor table
+                    if !self.path.anchors.is_empty() {
+                        let anchors: Vec<(f64, usize)> = self.path.anchors
+                            .iter()
+                            .map(|a| (a.depth, a.nlevels))
+                            .collect();
+                        if let Some(ref mut mode) = self.suggestion_mode {
+                            mode.sync_from_anchors(&anchors);
+                        }
+                    }
+                    self.compute_suggestions();
+                    self.set_status("Suggestions (synced from table)", StatusLevel::Info);
                 }
             }
 
@@ -1264,16 +1301,44 @@ impl App {
 
     /// Handle keyboard input in suggestion mode
     fn handle_suggestion_mode_key(&mut self, key: KeyEvent) {
-        // Handle Esc first - exit suggestion mode
+        // Handle Esc first - hide suggestion panel (but keep state)
         if key.code == KeyCode::Esc {
-            self.suggestion_mode = None;
-            self.set_status("Suggestion mode cancelled", StatusLevel::Info);
+            self.suggestion_visible = false;
+            self.set_status("Suggestions hidden (S to reopen)", StatusLevel::Info);
             return;
         }
 
-        // Handle Enter - accept suggestions
+        // Handle arrow keys for profile navigation
+        if matches!(key.code, KeyCode::Up | KeyCode::Down | KeyCode::Char('k') | KeyCode::Char('j')) {
+            let anchor_count = self.suggestion_mode.as_ref()
+                .map(|m| m.preview.len())
+                .unwrap_or(0);
+            if anchor_count > 0 {
+                match key.code {
+                    KeyCode::Up | KeyCode::Char('k') => {
+                        if self.profile_depth_idx > 0 {
+                            self.profile_depth_idx -= 1;
+                        }
+                    }
+                    KeyCode::Down | KeyCode::Char('j') => {
+                        if self.profile_depth_idx < anchor_count - 1 {
+                            self.profile_depth_idx += 1;
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
+
+        // Handle Enter - accept suggestions and hide panel
         if key.code == KeyCode::Enter {
-            if let Some(mode) = self.suggestion_mode.take() {
+            // Clone preview to avoid borrow issues
+            let preview: Vec<_> = self.suggestion_mode.as_ref()
+                .map(|m| m.preview.clone())
+                .unwrap_or_default();
+
+            if !preview.is_empty() {
                 self.path.clear();
 
                 // First pass: add all depths and calculate dz values
@@ -1281,7 +1346,7 @@ impl App {
                 // changes indices, so we need to add all values first, then find indices
                 let mut anchor_data: Vec<(f64, f64, usize)> = Vec::new(); // (depth, implied_dz, nlevels)
 
-                for anchor in &mode.preview {
+                for anchor in &preview {
                     // Calculate the implied dz from the suggestion
                     // The formula: depth = (nlevels - 1) * dz, so dz = depth / (nlevels - 1)
                     let implied_dz = if anchor.nlevels > 1 {
@@ -1323,14 +1388,13 @@ impl App {
                     self.path.add_anchor(depth_idx, dz_idx, depth, nlevels);
                 }
 
-                let count = mode.preview.len();
+                let count = preview.len();
+                self.suggestion_visible = false; // Hide suggestions after accepting
+                self.profile_depth_idx = 0; // Reset profile selection
                 self.set_status(
-                    format!("Applied {} anchors (table updated)", count),
+                    format!("Applied {} anchors", count),
                     StatusLevel::Success,
                 );
-
-                // Switch to Mesh Summary view (depth percentiles) after accepting
-                self.profile_view_mode = ProfileViewMode::MeshSummary;
             }
             return;
         }
@@ -1378,18 +1442,20 @@ impl App {
             // Adjust dz_surf (target surface layer thickness)
             KeyCode::Char(']') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_dz_surf(0.1);
+                    let floor = self.mesh_info.as_ref().map(|m| m.min_wet_depth).unwrap_or(0.01);
+                    mode.adjust_dz_surf(0.1, floor);
                     needs_recompute = true;
-                    Some((format!("Δz₀: {:.1}m", mode.params.dz_surf), StatusLevel::Info))
+                    Some((format!("Δz₀: {:.2}m", mode.params.dz_surf), StatusLevel::Info))
                 } else {
                     None
                 }
             }
             KeyCode::Char('[') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_dz_surf(-0.1);
+                    let floor = self.mesh_info.as_ref().map(|m| m.min_wet_depth).unwrap_or(0.01);
+                    mode.adjust_dz_surf(-0.1, floor);
                     needs_recompute = true;
-                    Some((format!("Δz₀: {:.1}m", mode.params.dz_surf), StatusLevel::Info))
+                    Some((format!("Δz₀: {:.2}m", mode.params.dz_surf), StatusLevel::Info))
                 } else {
                     None
                 }
@@ -1663,12 +1729,13 @@ impl App {
 
     /// Get cached profile data for single-depth profile view
     /// Uses interior mutability (RefCell) so it can be called during rendering with &self
+    /// Returns (z_coords, thicknesses, was_truncated, actual_levels)
     pub fn get_cached_profile_data(
         &self,
         depth: f64,
         nlevels: usize,
         first_depth: f64,
-    ) -> (Vec<f64>, bool, usize) {
+    ) -> (Vec<f64>, Vec<f64>, bool, usize) {
         use super::stretching::{compute_z_with_truncation, compute_layer_thicknesses};
 
         // Check if cache is valid
@@ -1693,7 +1760,7 @@ impl App {
         if cache_valid {
             let cache_ref = self.cached_profile_data.borrow();
             let cache = cache_ref.as_ref().unwrap();
-            return (cache.thicknesses.clone(), cache.was_truncated, cache.actual_levels);
+            return (cache.z_coords.clone(), cache.thicknesses.clone(), cache.was_truncated, cache.actual_levels);
         }
 
         // Compute new profile data
@@ -1708,6 +1775,7 @@ impl App {
 
         // Cache the result
         *self.cached_profile_data.borrow_mut() = Some(CachedProfileData {
+            z_coords: truncation.z_coords.clone(),
             thicknesses: thicknesses.clone(),
             was_truncated: truncation.was_truncated,
             actual_levels: truncation.actual_levels,
@@ -1723,7 +1791,7 @@ impl App {
             first_depth,
         });
 
-        (thicknesses, truncation.was_truncated, truncation.actual_levels)
+        (truncation.z_coords, thicknesses, truncation.was_truncated, truncation.actual_levels)
     }
 
     /// Get cached truncation data for all anchors

@@ -198,17 +198,17 @@ fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
 
 /// Unified viewer - full-width panel combining profile visualization and anchor editing
 fn render_unified_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
-    // If in suggestion mode, show suggestion panel
-    if app.suggestion_mode.is_some() {
-        render_suggestion_panel_fullwidth(frame, area, app);
-        return;
-    }
+    // Title shows suggestion mode indicator if active
+    let in_suggestions = app.suggestion_visible;
 
-    // Title based on view mode and edit state
-    let mode_name = match app.profile_view_mode {
-        ProfileViewMode::SingleDepth => "Single Depth",
-        ProfileViewMode::MultiDepth => "Multi-Depth",
-        ProfileViewMode::MeshSummary => "Mesh Summary",
+    let mode_indicator = if in_suggestions {
+        " SUGGESTIONS ".to_string()
+    } else {
+        match app.profile_view_mode {
+            ProfileViewMode::SingleDepth => "Single Depth".to_string(),
+            ProfileViewMode::MultiDepth => "Multi-Depth".to_string(),
+            ProfileViewMode::MeshSummary => "Mesh Summary".to_string(),
+        }
     };
 
     let edit_indicator = match app.anchor_edit_mode {
@@ -222,19 +222,25 @@ fn render_unified_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
         AnchorEditMode::EditLevels => format!(" │ Edit N: {}_", app.anchor_input),
     };
 
-    let anchor_count = app.path.anchors.len();
-    let title = format!(" {} ({} anchors){} ", mode_name, anchor_count, edit_indicator);
+    let anchor_count = if in_suggestions {
+        app.suggestion_mode.as_ref().map(|m| m.preview.len()).unwrap_or(0)
+    } else {
+        app.path.anchors.len()
+    };
 
+    let title = format!(" {} ({} anchors){} ", mode_indicator, anchor_count, edit_indicator);
+
+    let border_color = if in_suggestions { Color::Magenta } else { Color::Cyan };
     let block = Block::default()
         .title(title)
-        .title_style(Style::default().fg(Color::Cyan).bold())
+        .title_style(Style::default().fg(border_color).bold())
         .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Cyan));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    // Split-screen: anchor list (left) + divider (1 col) + profile view (right)
+    // Split-screen: left panel + divider (1 col) + profile view (right)
     let left_pct = app.panel_split;
     let right_pct = 100 - left_pct;
 
@@ -248,22 +254,24 @@ fn render_unified_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
         .split(inner);
 
     // Store areas for mouse hit detection and drag calculation
-    app.table_area = layout[0];    // Left panel (anchor list)
+    app.table_area = layout[0];    // Left panel
     app.divider_area = layout[1];  // Divider
     app.preview_area = layout[2];  // Right panel (profile view)
 
-    // Left: anchor list with editing
-    render_anchor_list_panel(frame, layout[0], app);
+    // Left: suggestion controls OR anchor list
+    if in_suggestions {
+        if let Some(ref mode) = app.suggestion_mode {
+            render_suggestion_controls_unified(frame, layout[0], app, mode);
+        }
+    } else {
+        render_anchor_list_panel(frame, layout[0], app);
+    }
 
     // Divider (draggable)
     render_divider(frame, layout[1], app);
 
-    // Right: profile visualization
-    match app.profile_view_mode {
-        ProfileViewMode::SingleDepth => render_single_depth_profile(frame, layout[2], app),
-        ProfileViewMode::MultiDepth => render_multi_depth_profile(frame, layout[2], app),
-        ProfileViewMode::MeshSummary => render_mesh_summary_profile(frame, layout[2], app),
-    }
+    // Right: ALWAYS show profile visualization (even in suggestion mode)
+    render_single_depth_profile(frame, layout[2], app);
 }
 
 /// Empty state when no anchors are defined
@@ -372,29 +380,49 @@ fn render_anchor_list_panel(frame: &mut Frame, area: Rect, app: &App) {
 
 /// Right panel: single depth bar chart
 fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
-    if app.path.anchors.is_empty() {
+    // Use suggestion preview anchors when suggestions are visible, otherwise use path anchors
+    let anchors: Vec<_> = if app.suggestion_visible {
+        if let Some(ref mode) = app.suggestion_mode {
+            mode.preview.iter().map(|a| (a.depth, a.nlevels)).collect()
+        } else {
+            vec![]
+        }
+    } else {
+        app.path.anchors.iter().map(|a| (a.depth, a.nlevels)).collect()
+    };
+
+    if anchors.is_empty() {
+        let msg = Paragraph::new("No anchors - adjust parameters")
+            .style(Style::default().fg(Color::DarkGray))
+            .alignment(Alignment::Center);
+        frame.render_widget(msg, Rect::new(area.x, area.y + area.height / 2, area.width, 1));
         return;
     }
 
-    let depth_idx = app.profile_depth_idx.min(app.path.anchors.len().saturating_sub(1));
-    let anchor = &app.path.anchors[depth_idx];
-    let depth = app.profile_custom_depth.unwrap_or(anchor.depth);
-    let nlevels = anchor.nlevels;
+    let depth_idx = app.profile_depth_idx.min(anchors.len().saturating_sub(1));
+    let (anchor_depth, anchor_nlevels) = anchors[depth_idx];
+    let depth = app.profile_custom_depth.unwrap_or(anchor_depth);
+    let nlevels = anchor_nlevels;
 
     let mut y = area.y;
 
-    // Header
+    // Get first_depth (h_s) from mesh - 10th percentile of positive depths
+    // This reference depth controls S-transform stretching behavior
+    let first_depth = app.mesh_info.as_ref().map(|m| m.min_depth).unwrap_or(0.1);
+
+    // Header showing key parameters (user can modify with f/F, b/B keys)
     let header = Line::from(vec![
-        Span::styled("Profile at ", Style::default().fg(Color::White)),
         Span::styled(format!("{:.1}m", depth), Style::default().fg(Color::Green).bold()),
-        Span::styled(format!(" ({} levels)", nlevels), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {} lvl ", nlevels), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("θf={:.1}", app.export_options.theta_f), Style::default().fg(Color::Cyan)),
+        Span::styled(" [f/F] ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("θb={:.1}", app.export_options.theta_b), Style::default().fg(Color::Yellow)),
+        Span::styled(" [b/B]", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
     y += 2;
 
-    // Get cached profile data
-    let first_depth = app.path.anchors.first().map(|a| a.depth).unwrap_or(1.0);
-    let (thicknesses, _was_truncated, _actual_levels) = app.get_cached_profile_data(depth, nlevels, first_depth);
+    let (z_coords, thicknesses, _was_truncated, _actual_levels) = app.get_cached_profile_data(depth, nlevels, first_depth);
 
     if thicknesses.is_empty() {
         let msg = Paragraph::new("No layers")
@@ -404,21 +432,64 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
     }
 
     let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
-    let bar_width = area.width.saturating_sub(14) as usize;
+    let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+    let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+
+    // Allocate space for depth range (e.g., "0.0→1.2") + bar + thickness
+    let bar_width = area.width.saturating_sub(24) as usize;
     let available_height = area.height.saturating_sub(y - area.y + 4) as usize;
 
-    // Show layers
+    // Pre-compute reference bar lengths for min/avg/max
+    let min_bar_len = if max_dz > 0.0 {
+        ((min_dz / max_dz) * bar_width as f64) as usize
+    } else {
+        0
+    };
+    let avg_bar_len = if max_dz > 0.0 {
+        ((avg_dz / max_dz) * bar_width as f64) as usize
+    } else {
+        0
+    };
+
+    // Show layers with depth ranges
+    // Each row shows the layer's thickness bar colored by where it falls relative to min/avg/max
+    // z_coords[i] is top of layer i, z_coords[i+1] is bottom
+    // z values are negative (depth below surface), so we show absolute values
     let layers_to_show = thicknesses.len().min(available_height);
     for (i, dz) in thicknesses.iter().take(layers_to_show).enumerate() {
-        let bar_len = if max_dz > 0.0 {
+        // Get depth range for this layer (convert from negative z to positive depth)
+        let z_top = z_coords.get(i).copied().unwrap_or(0.0).abs();
+        let z_bot = z_coords.get(i + 1).copied().unwrap_or(depth).abs();
+
+        // Format depth range compactly
+        let range_str = format!("{:.1}→{:.1}", z_top, z_bot);
+
+        // Calculate bar length for this layer's thickness
+        let layer_bar_len = if max_dz > 0.0 {
             ((dz / max_dz) * bar_width as f64) as usize
         } else {
             0
         };
-        let bar = "█".repeat(bar_len.max(1));
+
+        // Color the bar based on where this layer's thickness falls
+        // Split the bar into segments: up to min (cyan), min to avg (white), avg to max (yellow)
+        let cyan_len = layer_bar_len.min(min_bar_len).max(1);
+        let white_len = if layer_bar_len > min_bar_len {
+            (layer_bar_len - min_bar_len).min(avg_bar_len.saturating_sub(min_bar_len))
+        } else {
+            0
+        };
+        let yellow_len = if layer_bar_len > avg_bar_len {
+            layer_bar_len - avg_bar_len
+        } else {
+            0
+        };
+
         let line = Line::from(vec![
-            Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)),
-            Span::styled(bar, Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{:>10} ", range_str), Style::default().fg(Color::DarkGray)),
+            Span::styled("█".repeat(cyan_len), Style::default().fg(Color::Cyan)),
+            Span::styled("█".repeat(white_len), Style::default().fg(Color::White)),
+            Span::styled("█".repeat(yellow_len), Style::default().fg(Color::Yellow)),
             Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(Color::White)),
         ]);
         frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
@@ -433,20 +504,21 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
 
     // Stats footer
     let footer_y = area.y + area.height - 2;
-    let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
-    let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+    let ratio = if min_dz > 0.0 { max_dz / min_dz } else { 0.0 };
     let stats = Line::from(vec![
         Span::styled("min:", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{} ", format_dz(min_dz).trim()), Style::default().fg(Color::Cyan)),
         Span::styled("avg:", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{} ", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
         Span::styled("max:", Style::default().fg(Color::DarkGray)),
-        Span::styled(format_dz(max_dz).trim().to_string(), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("{} ", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
+        Span::styled(format!("({:.1}x)", ratio), Style::default().fg(Color::Magenta)),
     ]);
     frame.render_widget(Paragraph::new(stats), Rect::new(area.x, footer_y, area.width, 1));
 }
 
 /// Right panel: multi-depth stats table
+#[allow(dead_code)]
 fn render_multi_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
     if app.path.anchors.is_empty() {
         return;
@@ -456,12 +528,12 @@ fn render_multi_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
 
     // Header
     let header = Line::from(vec![
-        Span::styled(format!("{:>7}", "Depth"), Style::default().fg(Color::White).bold()),
-        Span::raw("  "),
+        Span::styled(format!("{:>11}", "Depth Range"), Style::default().fg(Color::White).bold()),
+        Span::raw(" "),
         Span::styled(format!("{:>7}", "minΔz"), Style::default().fg(Color::White).bold()),
-        Span::raw("  "),
+        Span::raw(" "),
         Span::styled(format!("{:>7}", "avgΔz"), Style::default().fg(Color::White).bold()),
-        Span::raw("  "),
+        Span::raw(" "),
         Span::styled(format!("{:>7}", "maxΔz"), Style::default().fg(Color::White).bold()),
     ]);
     frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
@@ -479,7 +551,10 @@ fn render_multi_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
     let anchor_nlevels: Vec<usize> = app.path.anchors.iter().map(|a| a.nlevels).collect();
     let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
 
-    // Rows
+    // Get mesh min depth for first zone start
+    let mesh_min = app.mesh_info.as_ref().map(|m| m.min_depth).unwrap_or(0.0);
+
+    // Rows - each row shows a depth range zone
     for (i, anchor) in app.path.anchors.iter().enumerate() {
         if y >= area.y + area.height - 1 {
             break;
@@ -492,19 +567,25 @@ fn render_multi_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
             (0.0, 0.0, 0.0)
         };
 
+        // Compute depth range: from previous anchor (or mesh min) to current anchor
+        let depth_start = if i == 0 { mesh_min } else { anchor_depths[i - 1] };
+        let depth_end = anchor.depth;
+
         let row_style = if is_selected {
             Style::default().bg(Color::DarkGray)
         } else {
             Style::default()
         };
 
+        // Format depth range compactly
+        let range_str = format!("{:.0}→{:.0}m", depth_start, depth_end);
         let line = Line::from(vec![
-            Span::styled(format!("{:>6.1}m", anchor.depth), Style::default().fg(Color::Green)),
-            Span::raw("  "),
+            Span::styled(format!("{:>11}", range_str), Style::default().fg(Color::Green)),
+            Span::raw(" "),
             Span::styled(format_dz(min_dz), Style::default().fg(Color::Cyan)),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(format_dz(avg_dz), Style::default().fg(Color::White)),
-            Span::raw("  "),
+            Span::raw(" "),
             Span::styled(format_dz(max_dz), Style::default().fg(Color::Yellow)),
         ]);
         frame.render_widget(Paragraph::new(line).style(row_style), Rect::new(area.x, y, area.width, 1));
@@ -513,6 +594,7 @@ fn render_multi_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Right panel: mesh summary
+#[allow(dead_code)]
 fn render_mesh_summary_profile(frame: &mut Frame, area: Rect, app: &App) {
     let y = area.y;
 
@@ -595,6 +677,7 @@ fn render_mesh_summary_profile(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Full-width suggestion panel - split-screen with draggable divider
+#[allow(dead_code)]
 fn render_suggestion_panel_fullwidth(frame: &mut Frame, area: Rect, app: &mut App) {
     let block = Block::default()
         .title(" Suggestions ")
@@ -659,6 +742,7 @@ fn render_divider(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 /// Suggestion mode controls (left panel)
+#[allow(dead_code)]
 fn render_suggestion_controls(frame: &mut Frame, area: Rect, app: &App, mode: &super::suggestions::SuggestionMode) {
     let mut y = area.y;
 
@@ -750,7 +834,152 @@ fn render_suggestion_controls(frame: &mut Frame, area: Rect, app: &App, mode: &s
     frame.render_widget(footer, Rect::new(area.x, footer_y, area.width, 1));
 }
 
+/// Unified suggestion controls: compact controls at top + preview table below
+fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, mode: &super::suggestions::SuggestionMode) {
+    let mut y = area.y;
+
+    // Algorithm selector with clear labels
+    let alg_name = match mode.algorithm.number() {
+        1 => "Exponential",
+        2 => "Uniform",
+        3 => "Percentile",
+        _ => "?",
+    };
+    let alg_line = Line::from(vec![
+        Span::styled("Algorithm: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", alg_name), Style::default().fg(Color::Cyan).bold()),
+        Span::styled("[1/2/3]", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(alg_line), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    // Parameters line 1: Levels and Anchors
+    let line1 = Line::from(vec![
+        Span::styled("Levels: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{}", mode.params.target_levels), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" [+/-]  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Anchors: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{}", mode.params.num_anchors), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" [</>]", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(line1), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    // Parameters line 2: Surface dz and Shallow levels
+    let line2 = Line::from(vec![
+        Span::styled("Surface Δz: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:.2}m", mode.params.dz_surf), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" [[/]]  ", Style::default().fg(Color::DarkGray)),
+        Span::styled("Shallow: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{}", mode.params.shallow_levels), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" [↑/↓]", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(line2), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    // Stretching line
+    let stretch_name = match app.export_options.stretching {
+        StretchingType::Quadratic => "Quadratic",
+        StretchingType::S => "S-transform",
+        StretchingType::Shchepetkin2005 => "Shchepetkin2005",
+        StretchingType::Shchepetkin2010 => "Shchepetkin2010",
+        StretchingType::Geyer => "Geyer",
+    };
+    let stretch_params = match app.export_options.stretching {
+        StretchingType::Quadratic => format!("a={:.1}", app.export_options.a_vqs0),
+        StretchingType::S => format!("θf={:.1} θb={:.1}", app.export_options.theta_f, app.export_options.theta_b),
+        _ => format!("θs={:.1} θb={:.1}", app.export_options.theta_s, app.export_options.theta_b),
+    };
+    let line3 = Line::from(vec![
+        Span::styled("Stretch: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(stretch_name, Style::default().fg(Color::Green).bold()),
+        Span::styled(format!(" ({}) ", stretch_params), Style::default().fg(Color::Green)),
+        Span::styled("[t]", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(line3), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    // Separator
+    let sep = "─".repeat(area.width.saturating_sub(1) as usize);
+    frame.render_widget(
+        Paragraph::new(sep).style(Style::default().fg(Color::DarkGray)),
+        Rect::new(area.x, y, area.width, 1),
+    );
+    y += 1;
+
+    // Preview table header
+    let header = Line::from(vec![
+        Span::styled(format!("{:>7}", "Depth"), Style::default().fg(Color::White).bold()),
+        Span::styled(format!("{:>8}", "N"), Style::default().fg(Color::White).bold()),
+        Span::styled(format!("{:>8}", "minΔz"), Style::default().fg(Color::Cyan)),
+        Span::styled(format!("{:>8}", "avgΔz"), Style::default().fg(Color::White)),
+        Span::styled(format!("{:>8}", "maxΔz"), Style::default().fg(Color::Yellow)),
+        Span::raw("   "), // Space for arrow
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    // Get zone stats and truncation data for preview
+    let anchor_depths: Vec<f64> = mode.preview.iter().map(|a| a.depth).collect();
+    let anchor_nlevels: Vec<usize> = mode.preview.iter().map(|a| a.nlevels).collect();
+    let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
+    let truncation_data = app.get_cached_truncation_data(&anchor_depths, &anchor_nlevels);
+
+    // Preview rows with truncation and selection indicator
+    let available_rows = (area.y + area.height).saturating_sub(y + 2) as usize;
+    let selected_idx = app.profile_depth_idx.min(mode.preview.len().saturating_sub(1));
+
+    for (i, anchor) in mode.preview.iter().take(available_rows).enumerate() {
+        let (min_dz, avg_dz, max_dz) = if let Some(stats) = zone_stats.get(i) {
+            (stats.min_dz, stats.avg_dz, stats.max_dz)
+        } else {
+            (f64::INFINITY, 0.0, 0.0)
+        };
+
+        // Format N with truncation indicator (right-aligned)
+        let (n_text, n_style) = if let Some(trunc) = truncation_data.get(i) {
+            if trunc.was_truncated {
+                (
+                    format!("{:>3}→{:<3}", trunc.requested_levels, trunc.actual_levels),
+                    Style::default().fg(Color::Yellow),
+                )
+            } else {
+                (
+                    format!("{:>7}", anchor.nlevels),
+                    Style::default().fg(Color::White),
+                )
+            }
+        } else {
+            (
+                format!("{:>7}", anchor.nlevels),
+                Style::default().fg(Color::White),
+            )
+        };
+
+        let is_selected = i == selected_idx;
+        let arrow = if is_selected { " ←" } else { "  " };
+
+        let row = Line::from(vec![
+            Span::styled(format!("{:>6.1}m", anchor.depth), Style::default().fg(Color::Green)),
+            Span::styled(format!(" {:>7}", n_text), n_style),
+            Span::styled(format!("{:>8}", format_dz(min_dz).trim()), Style::default().fg(Color::Cyan)),
+            Span::styled(format!("{:>8}", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
+            Span::styled(format!("{:>8}", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
+            Span::styled(arrow, Style::default().fg(Color::Cyan).bold()),
+        ]);
+        frame.render_widget(Paragraph::new(row), Rect::new(area.x, y, area.width, 1));
+        y += 1;
+    }
+
+    // Footer
+    let footer_y = area.y + area.height - 1;
+    let footer = Paragraph::new("[Enter] Accept  [Esc] Cancel  [↑/↓] Select  [f/F b/B] θ params")
+        .style(Style::default().fg(Color::Magenta));
+    frame.render_widget(footer, Rect::new(area.x, footer_y, area.width, 1));
+}
+
 /// Suggestion preview table with truncation display (right panel)
+#[allow(dead_code)]
 fn render_suggestion_preview_with_truncation(frame: &mut Frame, area: Rect, app: &App, mode: &super::suggestions::SuggestionMode) {
     let mut y = area.y;
 
@@ -849,7 +1078,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         };
         Line::from(Span::styled(msg.text.as_str(), style))
     } else {
-        let help = if app.suggestion_mode.is_some() {
+        let help = if app.suggestion_visible {
             "1-3: alg | +/-: lvls | [/]: dz | </>: anch | ↑↓: shal | z/Z: bot | t: stretch"
         } else {
             match app.focus {
@@ -863,7 +1092,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
     };
 
     // Right side: mode tabs
-    let is_suggest = app.suggestion_mode.is_some();
+    let is_suggest = app.suggestion_visible;
     let mode_tabs = Line::from(vec![
         Span::styled(" [", Style::default().fg(Color::DarkGray)),
         if is_suggest {

@@ -620,6 +620,61 @@ mod tests {
     }
 
     #[test]
+    fn test_s_transform_layer_variation() {
+        // Test that S-transform produces layer variation when first_depth != depth
+        let params = StretchingParams {
+            theta_f: 3.0,
+            theta_b: 0.5,
+            ..Default::default()
+        };
+
+        // 27.3m depth with first_depth=0.4m, 30 levels
+        let z = compute_s_transform_z(27.3, 30, &params, 0.4);
+        let thicknesses = compute_layer_thicknesses(&z);
+
+        assert_eq!(thicknesses.len(), 29);
+
+        let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
+
+        // Print for debugging
+        eprintln!("S-transform at 27.3m, first_depth=0.4m:");
+        eprintln!("  First 5 layers: {:?}", &thicknesses[..5]);
+        eprintln!("  Last 5 layers: {:?}", &thicknesses[24..]);
+        eprintln!("  Min: {:.4}, Max: {:.4}, Ratio: {:.2}", min_dz, max_dz, max_dz / min_dz);
+
+        // S-transform should produce significant variation (at least 2x ratio)
+        assert!(max_dz / min_dz > 2.0,
+            "S-transform should produce layer variation, got ratio {:.2}", max_dz / min_dz);
+    }
+
+    #[test]
+    fn test_s_transform_with_truncation() {
+        // Test that S-transform with truncation still shows layer variation
+        let params = StretchingParams {
+            theta_f: 3.0,
+            theta_b: 0.5,
+            ..Default::default()
+        };
+
+        // 27.3m depth with first_depth=0.4m, 30 levels, dz_bottom_min=1.0
+        let result = compute_z_with_truncation(27.3, 30, &params, 0.4, 1.0, StretchingKind::S);
+        let thicknesses = compute_layer_thicknesses(&result.z_coords);
+
+        eprintln!("S-transform with truncation at 27.3m:");
+        eprintln!("  Requested: 30, Actual: {}, Truncated: {}", result.actual_levels, result.was_truncated);
+        eprintln!("  Z-coords: {:?}", &result.z_coords);
+        if !thicknesses.is_empty() {
+            let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+            let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
+            eprintln!("  Thicknesses: {} layers", thicknesses.len());
+            eprintln!("  First 5: {:?}", &thicknesses[..5.min(thicknesses.len())]);
+            eprintln!("  Last 5: {:?}", &thicknesses[thicknesses.len().saturating_sub(5)..]);
+            eprintln!("  Min: {:.4}, Max: {:.4}, Ratio: {:.2}", min_dz, max_dz, max_dz / min_dz);
+        }
+    }
+
+    #[test]
     fn test_layer_thicknesses() {
         let z = vec![0.0, -2.0, -5.0, -10.0];
         let dz = compute_layer_thicknesses(&z);
@@ -628,5 +683,43 @@ mod tests {
         assert!((dz[0] - 2.0).abs() < 0.01);
         assert!((dz[1] - 3.0).abs() < 0.01);
         assert!((dz[2] - 5.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn test_ui_profile_view_uses_mesh_min_depth() {
+        // This test verifies the UI fix: using mesh's min_depth as first_depth
+        // ensures stretching is visible relative to actual bathymetry.
+        let params = StretchingParams {
+            theta_f: 3.0,
+            theta_b: 0.5,
+            ..Default::default()
+        };
+
+        // Simulating the OLD behavior: depth = first_depth = 27.3m (uniform result)
+        let z_old = compute_s_transform_z(27.3, 30, &params, 27.3);
+        let thick_old = compute_layer_thicknesses(&z_old);
+        let min_old = thick_old.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_old = thick_old.iter().cloned().fold(0.0, f64::max);
+        let ratio_old = max_old / min_old;
+
+        eprintln!("OLD behavior (first_depth=depth=27.3m): ratio={:.2}", ratio_old);
+
+        // Simulating the NEW behavior: first_depth = mesh.min_depth (e.g., 0.5m)
+        // This represents using the shallowest point in the mesh as reference
+        let mesh_min_depth = 0.5;  // Typical shallow water minimum
+        let z_new = compute_s_transform_z(27.3, 30, &params, mesh_min_depth);
+        let thick_new = compute_layer_thicknesses(&z_new);
+        let min_new = thick_new.iter().cloned().fold(f64::INFINITY, f64::min);
+        let max_new = thick_new.iter().cloned().fold(0.0, f64::max);
+        let ratio_new = max_new / min_new;
+
+        eprintln!("NEW behavior (first_depth=mesh.min_depth={:.1}m): ratio={:.2}", mesh_min_depth, ratio_new);
+        eprintln!("  Min: {:.4}m, Max: {:.4}m", min_new, max_new);
+
+        // Old behavior should be nearly uniform (ratio ~1.0)
+        assert!(ratio_old < 1.1, "Old behavior should be uniform, got ratio {:.2}", ratio_old);
+
+        // New behavior should show significant stretching (ratio > 2.0)
+        assert!(ratio_new > 2.0, "New behavior should show stretching, got ratio {:.2}", ratio_new);
     }
 }
