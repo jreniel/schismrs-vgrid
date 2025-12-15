@@ -1481,8 +1481,29 @@ impl App {
                 }
             }
 
-            // Adjust shallow levels
+            // Profile navigation with arrows
             KeyCode::Up | KeyCode::Char('k') => {
+                if self.profile_depth_idx > 0 {
+                    self.profile_depth_idx -= 1;
+                    Some((format!("Profile: anchor {}", self.profile_depth_idx + 1), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                let max_idx = self.suggestion_mode.as_ref()
+                    .map(|m| m.preview.len().saturating_sub(1))
+                    .unwrap_or(0);
+                if self.profile_depth_idx < max_idx {
+                    self.profile_depth_idx += 1;
+                    Some((format!("Profile: anchor {}", self.profile_depth_idx + 1), StatusLevel::Info))
+                } else {
+                    None
+                }
+            }
+
+            // Adjust shallow levels with s/S
+            KeyCode::Char('S') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
                     mode.adjust_shallow_levels(1);
                     needs_recompute = true;
@@ -1491,7 +1512,7 @@ impl App {
                     None
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => {
+            KeyCode::Char('s') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
                     mode.adjust_shallow_levels(-1);
                     needs_recompute = true;
@@ -1558,26 +1579,6 @@ impl App {
                     StretchingType::S | StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
                         self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
                         Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
-                    }
-                    _ => None
-                }
-            }
-
-            // Adjust theta_s (ROMS transforms only): S/s = increase/decrease
-            KeyCode::Char('S') => {
-                match self.export_options.stretching {
-                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
-                        self.export_options.theta_s = (self.export_options.theta_s + 0.5).min(10.0);
-                        Some((format!("θs: {:.1}", self.export_options.theta_s), StatusLevel::Info))
-                    }
-                    _ => None
-                }
-            }
-            KeyCode::Char('s') => {
-                match self.export_options.stretching {
-                    StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
-                        self.export_options.theta_s = (self.export_options.theta_s - 0.5).max(0.0);
-                        Some((format!("θs: {:.1}", self.export_options.theta_s), StatusLevel::Info))
                     }
                     _ => None
                 }

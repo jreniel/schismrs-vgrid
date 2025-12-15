@@ -818,7 +818,7 @@ fn render_suggestion_controls(frame: &mut Frame, area: Rect, app: &App, mode: &s
     let param_lines = [
         (format!("  Levels: {}", mode.params.target_levels), "[+/-]"),
         (format!("  Anchors: {}", mode.params.num_anchors), "[</>]"),
-        (format!("  Shallow: {}", mode.params.shallow_levels), "[↑/↓]"),
+        (format!("  Shallow: {}", mode.params.shallow_levels), "[s/S]"),
         (format!("  Δz_surf: {:.1}m", mode.params.dz_surf), "[[/]]"),
     ];
     for (text, keys) in param_lines {
