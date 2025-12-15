@@ -146,14 +146,13 @@ Generate VQS grids using CLI arguments (for scripting/automation).
 
 ```bash
 cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
+    --depths 50 100 200 500 1000 \
+    --nlevels 10 15 20 25 30 \
     --transform s \
-    --dz-bottom-min=1. \
-    --a-vqs0=-0.3 \
-    --theta-b=0. \
     --theta-f=3. \
-    -o vgrid.in \
-    hsm --depths 50 100 200 500 1000 \
-        --nlevels 10 15 20 25 30
+    --theta-b=0.5 \
+    --dz-bottom-min=1. \
+    -o vgrid.in
 ```
 
 ### Parameters
