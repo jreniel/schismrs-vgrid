@@ -455,8 +455,14 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
     let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
     let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
 
-    // Allocate space for depth range (e.g., "0.0→1.2") + bar + thickness
-    let bar_width = area.width.saturating_sub(24) as usize;
+    // Calculate adaptive widths based on actual data
+    // Sample first and last layer to determine range string width
+    let sample_range = format_depth_range(0.0, thicknesses.first().copied().unwrap_or(1.0));
+    let range_width = sample_range.len() + 1; // +1 for trailing space
+    let dz_width = 7; // " X.XXm " format
+
+    // Allocate remaining space to bar, minimum 10 chars
+    let bar_width = (area.width as usize).saturating_sub(range_width + dz_width).max(10);
     let available_height = area.height.saturating_sub(y - area.y + 4) as usize;
 
     // Pre-compute reference bar lengths for min/avg/max
@@ -505,15 +511,13 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
             0
         };
 
-        // Determine dz color and marker based on where this layer falls
-        let (dz_color, marker) = if (*dz - min_dz).abs() < 1e-9 {
-            (Color::Cyan, " ←min")
-        } else if (*dz - max_dz).abs() < 1e-9 {
-            (Color::Yellow, " ←max")
-        } else if *dz <= avg_dz {
-            (Color::Cyan, "")
+        // Color dz based on where it falls: cyan for thin, white for avg, yellow for thick
+        let dz_color = if *dz <= min_dz * 1.1 {
+            Color::Cyan
+        } else if *dz >= max_dz * 0.9 {
+            Color::Yellow
         } else {
-            (Color::Yellow, "")
+            Color::White
         };
 
         let line = Line::from(vec![
@@ -522,7 +526,6 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
             Span::styled("█".repeat(white_len), Style::default().fg(Color::White)),
             Span::styled("█".repeat(yellow_len), Style::default().fg(Color::Yellow)),
             Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(dz_color)),
-            Span::styled(marker, Style::default().fg(Color::DarkGray)),
         ]);
         frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
         y += 1;
