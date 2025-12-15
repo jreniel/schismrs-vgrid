@@ -403,7 +403,11 @@ pub fn compute_path_zone_stats(
             continue;
         }
 
-        let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+        // Only consider positive thicknesses above epsilon for min_dz
+        const DZ_EPSILON: f64 = 1e-6;
+        let min_dz = thicknesses.iter().cloned()
+            .filter(|&dz| dz > DZ_EPSILON)
+            .fold(f64::INFINITY, f64::min);
         let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
         let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
 
@@ -542,8 +546,12 @@ pub fn compute_mesh_zone_stats(
 
                     let thicknesses = compute_layer_thicknesses(&z_coords);
 
+                    // Only consider positive thicknesses above epsilon for min_dz
+                    const DZ_EPSILON: f64 = 1e-6;
                     for &dz in &thicknesses {
-                        acc.min_dz = acc.min_dz.min(dz);
+                        if dz > DZ_EPSILON {
+                            acc.min_dz = acc.min_dz.min(dz);
+                        }
                         acc.max_dz = acc.max_dz.max(dz);
                         acc.dz_sum += dz;
                         acc.dz_count += 1;
@@ -571,7 +579,11 @@ pub fn compute_mesh_zone_stats(
                     stretching,
                 );
                 let thicknesses = compute_layer_thicknesses(&z_coords);
-                let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+                // Only consider positive thicknesses above epsilon for min
+                const DZ_EPSILON: f64 = 1e-6;
+                let min = thicknesses.iter().cloned()
+                    .filter(|&dz| dz > DZ_EPSILON)
+                    .fold(f64::INFINITY, f64::min);
                 let max = thicknesses.iter().cloned().fold(0.0, f64::max);
                 let avg = thicknesses.iter().sum::<f64>() / thicknesses.len().max(1) as f64;
                 (min, avg, max, thicknesses)

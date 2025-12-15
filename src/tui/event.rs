@@ -2,8 +2,8 @@
 //!
 //! Handles keyboard and mouse events via crossterm
 
-use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEvent};
-use std::time::Duration;
+use crossterm::event::{self, Event as CrosstermEvent, KeyEvent, MouseEvent, MouseEventKind};
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc;
 
 /// Application events
@@ -24,6 +24,9 @@ pub struct EventHandler {
     rx: mpsc::UnboundedReceiver<Event>,
 }
 
+/// Minimum interval between drag events (16ms = ~60fps)
+const DRAG_THROTTLE_MS: u64 = 16;
+
 impl EventHandler {
     /// Create a new event handler with the given tick rate in milliseconds
     pub fn new(tick_rate_ms: u64) -> Self {
@@ -31,6 +34,9 @@ impl EventHandler {
         let (tx, rx) = mpsc::unbounded_channel();
 
         tokio::spawn(async move {
+            let mut last_drag_time = Instant::now();
+            let drag_throttle = Duration::from_millis(DRAG_THROTTLE_MS);
+
             loop {
                 if event::poll(tick_rate).unwrap_or(false) {
                     match event::read() {
@@ -40,6 +46,15 @@ impl EventHandler {
                             }
                         }
                         Ok(CrosstermEvent::Mouse(mouse)) => {
+                            // Throttle drag events to prevent lag
+                            if matches!(mouse.kind, MouseEventKind::Drag(_)) {
+                                let now = Instant::now();
+                                if now.duration_since(last_drag_time) < drag_throttle {
+                                    // Skip this drag event - too soon after the last one
+                                    continue;
+                                }
+                                last_drag_time = now;
+                            }
                             if tx.send(Event::Mouse(mouse)).is_err() {
                                 break;
                             }

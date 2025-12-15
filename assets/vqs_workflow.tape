@@ -1,6 +1,6 @@
-# VQS Designer - Suggestion Mode Demo
-# Shows mesh-aware suggestion algorithms and parameter tuning
-Output vqs_designer_suggestions.gif
+# VQS Designer - Complete Workflow Demo
+# Demonstrates the unified split-screen interface with suggestion mode
+Output vqs_designer_workflow.gif
 
 Set Shell bash
 Set Theme "Dracula"
@@ -9,7 +9,7 @@ Set Height 700
 Set FontSize 14
 Set Padding 10
 
-# Launch with mesh
+# Launch the designer with a mesh
 Type "target/release/vqs-designer -g hgrid.gr3"
 Sleep 1s
 Enter
@@ -19,9 +19,7 @@ Sleep 2s
 Type "S"
 Sleep 1.5s
 
-# Cycle through algorithms (1-3)
-Type "1"
-Sleep 800ms
+# Show different algorithms (1-3)
 Type "2"
 Sleep 800ms
 Type "3"
@@ -29,11 +27,7 @@ Sleep 800ms
 Type "1"
 Sleep 1s
 
-# Increase number of anchors (>)
-Type ">"
-Sleep 300ms
-Type ">"
-Sleep 300ms
+# Adjust number of anchors (increase with >)
 Type ">"
 Sleep 300ms
 Type ">"
@@ -43,48 +37,26 @@ Sleep 300ms
 Type ">"
 Sleep 800ms
 
-# Increase target levels (+)
+# Adjust target levels (+)
 Type "+"
 Sleep 300ms
 Type "+"
 Sleep 300ms
 Type "+"
-Sleep 300ms
-Type "+"
-Sleep 800ms
-
-# Adjust surface dz ([)
-Type "["
-Sleep 400ms
-Type "["
 Sleep 800ms
 
 # Cycle stretching type (t)
 Type "t"
-Sleep 600ms
+Sleep 800ms
 Type "t"
 Sleep 800ms
 
-# Adjust theta_b (b) for S-transform
+# Adjust stretching parameters
 Type "b"
 Sleep 300ms
 Type "b"
 Sleep 300ms
 Type "b"
-Sleep 300ms
-Type "b"
-Sleep 300ms
-Type "b"
-Sleep 800ms
-
-# Adjust theta_f (f)
-Type "f"
-Sleep 300ms
-Type "f"
-Sleep 300ms
-Type "f"
-Sleep 300ms
-Type "f"
 Sleep 800ms
 
 # Adjust bottom min dz (z)
@@ -97,21 +69,42 @@ Sleep 800ms
 Enter
 Sleep 1.5s
 
-# Show the Multi-Depth stats view
+# Cycle through view modes (v)
 Type "v"
-Sleep 1.5s
+Sleep 1s
+Type "v"
+Sleep 1s
+Type "v"
+Sleep 1s
 
-# Export (E)
-Type "E"
+# Navigate anchors to show selection
+Down
+Sleep 400ms
+Down
+Sleep 400ms
+Down
+Sleep 400ms
+Up
 Sleep 800ms
 
-# Select vgrid.in export (Enter)
-Enter
-Sleep 600ms
+# Show stretching info (i)
+Type "i"
+Sleep 2s
+Escape
+Sleep 500ms
 
-# Confirm overwrite (y)
+# Open export modal (E)
+Type "E"
+Sleep 1s
+
+# Export vgrid.in (Enter)
+Enter
+Sleep 800ms
+
+# Confirm overwrite if needed (y)
 Type "y"
 Sleep 1s
 
+# Quit (q)
 Type "q"
 Sleep 500ms

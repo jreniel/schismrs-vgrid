@@ -6,60 +6,113 @@ Vertical grid generation for SCHISM ocean model, featuring an interactive TUI de
 
 The star of this crate is **vqs-designer** - an interactive terminal application for designing VQS (Variable Quadratic/S-coordinate) master grids.
 
-![VQS Designer Workflow](./assets/vqs_designer_suggestions.gif)
+![VQS Designer Workflow](./assets/vqs_designer_workflow.gif)
 
 ```bash
 cargo run --release --bin vqs-designer -- -g /path/to/hgrid.gr3
 ```
 
-### Features
+### Interface Overview
 
-**Two Synchronized Views** (toggle with `v`):
-- **Table View**: Traditional construction table (depths × min Δz) for visual cell selection
-- **Anchor View**: Direct editing of (depth, N) pairs for precise control
+The designer features a **unified split-screen interface**:
 
-![Table View](./assets/vqs_designer_main.png) ![Anchor View](./assets/vqs_designer_anchors.png)
+- **Left Panel**: Anchor list showing depth and number of levels (N) for each anchor point
+- **Right Panel**: Profile visualization with three view modes
+- **Draggable Divider**: Resize panels with mouse or `{`/`}` keys
 
-**Mesh-Aware Suggestions** (press `S`):
-- Exponential, Uniform, and Percentile algorithms
-- Analyzes your mesh's depth distribution
-- Real-time preview with Δz statistics
+### View Modes
 
-**Real-Time Feedback**:
-- Layer thickness statistics (min/avg/max Δz) per anchor
-- Bottom truncation preview based on `dz_bottom_min`
-- Stretching parameter adjustment (θf, θb, a_vqs0)
+Press `v` to cycle through profile view modes:
 
-**Export**:
-- Generate `vgrid.in` directly (requires mesh with `-g` flag)
-- Overwrite confirmation for safety
+| Mode | Description |
+|------|-------------|
+| **Single Depth** | Bar chart showing layer thicknesses at selected anchor |
+| **Multi-Depth** | Table with min/avg/max Δz statistics for all anchors |
+| **Mesh Summary** | Depth percentiles and mesh coverage analysis |
+
+### Stretching Functions
+
+Press `t` to cycle through five stretching functions:
+
+| Function | Best For | Key Parameters |
+|----------|----------|----------------|
+| **Quadratic** | Simple applications, uniform distribution | `a` (-1 to 1) |
+| **S-transform** | General SCHISM, estuarine modeling | `θf`, `θb` |
+| **Shchepetkin2005** | ROMS compatibility, shelf/slope | `θs`, `θb`, `hc` |
+| **Shchepetkin2010** | Deep ocean, dual surface/bottom focus | `θs`, `θb`, `hc` |
+| **Geyer** | Shallow coastal, bottom boundary layer | `θs`, `θb`, `hc` |
+
+Press `i` for detailed help on the current stretching function and its parameters.
+
+### Mesh-Aware Suggestions
+
+Press `S` to enter suggestion mode (requires mesh loaded with `-g`):
+
+- **Exponential**: Concentrates resolution in shallow depths
+- **Uniform**: Even spacing across depth range
+- **Percentile**: Based on mesh depth distribution
+
+Real-time preview shows:
+- Layer count (N) with truncation indicators (e.g., `10→8` when bottom truncation applies)
+- Min/avg/max Δz statistics computed from actual mesh nodes
+- Adaptive precision for small values (mm-scale shown as `0.003m`, not `0.00m`)
 
 ### Keyboard Controls
 
+#### Navigation & Editing
 | Key | Action |
 |-----|--------|
-| `v` | Toggle Table/Anchor view |
-| `S` | Enter suggestion mode |
-| `Space/Enter` | Select cell (Table) / Edit anchor (Anchor) |
-| `a/A` | Add depth row / Δz column (Table) or Add anchor (Anchor) |
-| `d` | Delete row/column (Table) or Delete anchor (Anchor) |
-| `e/E` | Export modal |
-| `s/q` | Toggle S-transform / Quadratic stretching |
-| `f/F` | Adjust θf (±0.5) |
-| `b/B` | Adjust θb (±0.1) |
-| `z/Z` | Adjust dz_bottom_min (±0.1) |
-| `{/}` | Resize panels |
-| `?` | Help overlay |
-| `Esc/q` | Quit |
+| `↑`/`↓` or `j`/`k` | Navigate anchors |
+| `a` | Add new anchor (depth, then N) |
+| `d` | Delete selected anchor |
+| `e` or `Enter` | Edit selected anchor |
+| `c` | Clear all anchors |
+
+#### View & Export
+| Key | Action |
+|-----|--------|
+| `v` | Cycle view mode (Single/Multi-Depth/Mesh Summary) |
+| `E` | Open export modal |
+| `S` | Enter suggestion mode (requires mesh) |
+| `?` or `F1` | Toggle help overlay |
+
+#### Stretching Controls
+| Key | Action |
+|-----|--------|
+| `t` | Cycle stretching type |
+| `i` | Show stretching function info |
+| `f`/`F` | Adjust θf ±0.5 (S-transform) |
+| `b`/`B` | Adjust θb ±0.1 |
+| `s` | Adjust θs +0.5 (ROMS transforms) |
+| `h`/`H` | Adjust hc ±1m (ROMS transforms) |
+| `A` | Adjust a_vqs0 +0.1 (Quadratic) |
+| `z`/`Z` | Adjust dz_bottom_min ±0.1m |
+
+#### Suggestion Mode
+| Key | Action |
+|-----|--------|
+| `1`-`3` | Select algorithm |
+| `+`/`-` | Adjust target levels |
+| `[`/`]` | Adjust surface Δz |
+| `<`/`>` | Adjust number of anchors |
+| `↑`/`↓` | Adjust shallow levels |
+| `Enter` | Accept suggestions |
+| `Esc` | Cancel |
+
+#### Panel Resize
+| Key | Action |
+|-----|--------|
+| `{`/`}` | Shrink/expand left panel |
+| Mouse drag | Drag divider to resize |
 
 ### Example Workflow
 
-1. Load your mesh: `vqs-designer -g mesh.gr3`
-2. Press `S` to enter suggestion mode
-3. Adjust parameters (target levels, min Δz, number of anchors)
-4. Press `Enter` to accept suggestions
-5. Fine-tune in Table or Anchor view
-6. Press `e` to export `vgrid.in`
+1. **Load mesh**: `vqs-designer -g mesh.gr3`
+2. **Get suggestions**: Press `S`, adjust parameters
+3. **Accept**: Press `Enter` (switches to Mesh Summary view)
+4. **Fine-tune**: Edit individual anchors with `e`
+5. **Adjust stretching**: Press `t` to try different functions, `i` for info
+6. **Export**: Press `E`, then `Enter` to write `vgrid.in`
 
 ---
 
@@ -107,10 +160,12 @@ cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
 
 | Parameter | Description |
 |-----------|-------------|
-| `--transform` | Stretching function: `s` (S-transform) or `quadratic` |
+| `--transform` | Stretching function: `s`, `quadratic`, `shchepetkin2005`, `shchepetkin2010`, `geyer` |
 | `--theta-f` | Surface/bottom focusing intensity (0.1-20) |
-| `--theta-b` | Bottom layer focusing weight (0-1) |
-| `--a-vqs0` | Stretching amplitude (-1 to 1) |
+| `--theta-b` | Bottom layer focusing weight (0-1 for S, 0-4 for ROMS) |
+| `--theta-s` | Surface stretching (0-10, ROMS transforms) |
+| `--hc` | Critical depth in meters (ROMS transforms) |
+| `--a-vqs0` | Stretching amplitude (-1 to 1, Quadratic) |
 | `--dz-bottom-min` | Minimum bottom layer thickness |
 
 ---

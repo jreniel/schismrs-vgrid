@@ -103,16 +103,22 @@ pub struct App {
     /// Table scroll offset (column)
     pub table_scroll_col: usize,
 
-    /// Panel split ratio (percentage for left/table panel, 20-80)
+    /// Panel split ratio (percentage for left/anchor panel, 20-80)
     pub panel_split: u16,
 
     /// Whether we're in panel resize mode (dragging)
     pub resizing_panels: bool,
 
-    /// Current view mode (Table or Anchors)
-    pub view_mode: ViewMode,
+    /// Profile viewer mode (right panel)
+    pub profile_view_mode: ProfileViewMode,
 
-    /// Selected anchor index in anchor view
+    /// Selected depth for profile viewer (index into anchor depths, or custom)
+    pub profile_depth_idx: usize,
+
+    /// Custom depth for profile viewer (when not using anchor depth)
+    pub profile_custom_depth: Option<f64>,
+
+    /// Selected anchor index in anchor editor
     pub anchor_selected: usize,
 
     /// Edit mode for anchor view
@@ -133,6 +139,12 @@ pub struct App {
     /// Cached zone stats to avoid expensive recomputation every frame
     /// Uses RefCell for interior mutability during rendering
     pub cached_zone_stats: std::cell::RefCell<Option<CachedZoneStats>>,
+
+    /// Cached single-depth profile data to avoid expensive recomputation every frame
+    pub cached_profile_data: std::cell::RefCell<Option<CachedProfileData>>,
+
+    /// Cached truncation data for all anchors
+    pub cached_truncation_data: std::cell::RefCell<Option<CachedTruncationData>>,
 }
 
 /// Cached zone statistics with invalidation key
@@ -156,6 +168,52 @@ pub struct CachedZoneStats {
     pub hc: f64,
     /// Cache key: a_vqs0
     pub a_vqs0: f64,
+}
+
+/// Cached single-depth profile data with invalidation key
+#[derive(Clone, Debug)]
+pub struct CachedProfileData {
+    /// Layer thicknesses
+    pub thicknesses: Vec<f64>,
+    /// Truncation info
+    pub was_truncated: bool,
+    pub actual_levels: usize,
+    /// Cache keys
+    pub depth: f64,
+    pub nlevels: usize,
+    pub stretching: StretchingType,
+    pub theta_f: f64,
+    pub theta_b: f64,
+    pub theta_s: f64,
+    pub hc: f64,
+    pub a_vqs0: f64,
+    pub dz_bottom_min: f64,
+    pub first_depth: f64,
+}
+
+/// Truncation info for a single anchor
+#[derive(Clone, Debug)]
+pub struct AnchorTruncation {
+    pub requested_levels: usize,
+    pub actual_levels: usize,
+    pub was_truncated: bool,
+}
+
+/// Cached truncation data for all anchors
+#[derive(Clone, Debug)]
+pub struct CachedTruncationData {
+    /// Truncation info per anchor
+    pub truncations: Vec<AnchorTruncation>,
+    /// Cache keys
+    pub anchor_depths: Vec<f64>,
+    pub anchor_nlevels: Vec<usize>,
+    pub stretching: StretchingType,
+    pub theta_f: f64,
+    pub theta_b: f64,
+    pub theta_s: f64,
+    pub hc: f64,
+    pub a_vqs0: f64,
+    pub dz_bottom_min: f64,
 }
 
 /// Which panel has focus
@@ -231,14 +289,16 @@ pub enum OutputFormat {
     VgridFile,
 }
 
-/// View mode for the left panel
+/// View mode for the right panel (profile viewer)
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
-pub enum ViewMode {
-    /// Construction table view (depth × min_dz grid)
+pub enum ProfileViewMode {
+    /// Single depth profile - detailed layer breakdown
     #[default]
-    Table,
-    /// Direct anchor list view
-    Anchors,
+    SingleDepth,
+    /// Multi-depth comparison - compact profiles at multiple depths
+    MultiDepth,
+    /// Mesh summary - layer thickness distribution across mesh (requires hgrid)
+    MeshSummary,
 }
 
 /// Edit mode for anchor view
@@ -307,7 +367,9 @@ impl App {
             table_scroll_col: 0,
             panel_split: 55,
             resizing_panels: false,
-            view_mode: ViewMode::default(),
+            profile_view_mode: ProfileViewMode::default(),
+            profile_depth_idx: 0,
+            profile_custom_depth: None,
             anchor_selected: 0,
             anchor_edit_mode: AnchorEditMode::default(),
             anchor_input: String::new(),
@@ -315,6 +377,8 @@ impl App {
             pending_overwrite: false,
             show_transform_help: false,
             cached_zone_stats: std::cell::RefCell::new(None),
+            cached_profile_data: std::cell::RefCell::new(None),
+            cached_truncation_data: std::cell::RefCell::new(None),
         };
 
         // Compute initial suggestions if in suggestion mode
@@ -325,14 +389,14 @@ impl App {
         app
     }
 
-    /// Create app with custom initial table values
-    pub fn with_table(
+    /// Create app with custom initial anchor values
+    pub fn with_anchors(
         depths: Vec<f64>,
-        min_dzs: Vec<f64>,
+        nlevels: Vec<usize>,
         hgrid_path: Option<PathBuf>,
         output_dir: PathBuf,
     ) -> Self {
-        let mut table = ConstructionTable::with_values(depths, min_dzs);
+        let mut table = ConstructionTable::new();
         let mesh_info = hgrid_path.and_then(|path| Self::load_mesh(&path, &mut table));
 
         // Start in suggestion mode if mesh is loaded
@@ -364,7 +428,9 @@ impl App {
             table_scroll_col: 0,
             panel_split: 55,
             resizing_panels: false,
-            view_mode: ViewMode::default(),
+            profile_view_mode: ProfileViewMode::default(),
+            profile_depth_idx: 0,
+            profile_custom_depth: None,
             anchor_selected: 0,
             anchor_edit_mode: AnchorEditMode::default(),
             anchor_input: String::new(),
@@ -372,7 +438,15 @@ impl App {
             pending_overwrite: false,
             show_transform_help: false,
             cached_zone_stats: std::cell::RefCell::new(None),
+            cached_profile_data: std::cell::RefCell::new(None),
+            cached_truncation_data: std::cell::RefCell::new(None),
         };
+
+        // Add provided anchors to path
+        for (depth, n) in depths.into_iter().zip(nlevels.into_iter()) {
+            app.path.add_direct_anchor(depth, n);
+        }
+        app.path.validate();
 
         // Compute initial suggestions if in suggestion mode
         if app.suggestion_mode.is_some() {
@@ -500,7 +574,7 @@ impl App {
                 self.show_transform_help = false;
                 return;
             }
-            // Panel resize: { shrinks table, } expands table
+            // Panel resize: { shrinks left, } expands left
             KeyCode::Char('{') => {
                 self.panel_split = self.panel_split.saturating_sub(5).max(20);
                 return;
@@ -509,19 +583,20 @@ impl App {
                 self.panel_split = (self.panel_split + 5).min(80);
                 return;
             }
-            // View toggle: v switches between Table and Anchors view
+            // Profile view toggle: 'v' cycles through profile view modes
             KeyCode::Char('v') if self.suggestion_mode.is_none()
-                && self.table.edit_mode == EditMode::Navigate
                 && self.anchor_edit_mode == AnchorEditMode::Navigate => {
-                self.view_mode = match self.view_mode {
-                    ViewMode::Table => ViewMode::Anchors,
-                    ViewMode::Anchors => ViewMode::Table,
+                self.profile_view_mode = match self.profile_view_mode {
+                    ProfileViewMode::SingleDepth => ProfileViewMode::MultiDepth,
+                    ProfileViewMode::MultiDepth => ProfileViewMode::MeshSummary,
+                    ProfileViewMode::MeshSummary => ProfileViewMode::SingleDepth,
                 };
-                let mode_name = match self.view_mode {
-                    ViewMode::Table => "Table",
-                    ViewMode::Anchors => "Anchors",
+                let mode_name = match self.profile_view_mode {
+                    ProfileViewMode::SingleDepth => "Single Depth",
+                    ProfileViewMode::MultiDepth => "Multi-Depth",
+                    ProfileViewMode::MeshSummary => "Mesh Summary",
                 };
-                self.set_status(format!("View: {}", mode_name), StatusLevel::Info);
+                self.set_status(format!("Profile: {}", mode_name), StatusLevel::Info);
                 return;
             }
             _ => {}
@@ -551,17 +626,8 @@ impl App {
             return;
         }
 
-        // Handle based on focus and view mode
-        match self.focus {
-            Focus::Table => {
-                match self.view_mode {
-                    ViewMode::Table => self.handle_table_key(key),
-                    ViewMode::Anchors => self.handle_anchor_view_key(key),
-                }
-            }
-            Focus::PathPreview => self.handle_preview_key(key),
-            Focus::Export => self.handle_export_key(key),
-        }
+        // Single unified panel - use anchor view keys (which include profile navigation)
+        self.handle_unified_view_key(key);
     }
 
     /// Handle keyboard input in export modal
@@ -666,13 +732,12 @@ impl App {
             MouseEventKind::Drag(MouseButton::Left) => {
                 if self.resizing_panels {
                     // Calculate new split percentage based on mouse position
-                    // We need to know the total width of the body area
-                    // The divider_area x position tells us where we are
-                    let body_start = self.table_area.x.saturating_sub(1); // Account for border
-                    let body_width = self.table_area.width + self.divider_area.width + self.preview_area.width + 2;
-                    if body_width > 0 {
-                        let rel_x = x.saturating_sub(body_start);
-                        let new_split = ((rel_x as u32 * 100) / body_width as u32) as u16;
+                    // Total width = left panel + divider + right panel
+                    let total_width = self.table_area.width + self.divider_area.width + self.preview_area.width;
+                    if total_width > 0 {
+                        // Mouse position relative to start of left panel
+                        let rel_x = x.saturating_sub(self.table_area.x);
+                        let new_split = ((rel_x as u32 * 100) / total_width as u32) as u16;
                         self.panel_split = new_split.clamp(20, 80);
                     }
                 }
@@ -813,90 +878,6 @@ impl App {
             }
         }
     }
-
-    fn handle_table_key(&mut self, key: KeyEvent) {
-        match key.code {
-            // Navigation
-            KeyCode::Up | KeyCode::Char('k') => self.table.cursor_up(),
-            KeyCode::Down | KeyCode::Char('j') => self.table.cursor_down(),
-            KeyCode::Left | KeyCode::Char('h') => self.table.cursor_left(),
-            KeyCode::Right | KeyCode::Char('l') => self.table.cursor_right(),
-
-            // Selection
-            KeyCode::Enter | KeyCode::Char(' ') => {
-                let (row, col) = self.table.cursor;
-                if self.path.toggle_anchor(&self.table, row, col) {
-                    if self.path.is_cell_selected(row, col) {
-                        self.set_status("Anchor added", StatusLevel::Success);
-                    } else {
-                        self.set_status("Anchor removed", StatusLevel::Info);
-                    }
-                } else {
-                    self.set_status("Cannot select this cell", StatusLevel::Warning);
-                }
-            }
-
-            // Table modification
-            KeyCode::Char('a') => {
-                self.table.edit_mode = EditMode::AddRow;
-                self.table.input_buffer.clear();
-                self.set_status("Enter depth value (m):", StatusLevel::Info);
-            }
-            KeyCode::Char('A') => {
-                self.table.edit_mode = EditMode::AddColumn;
-                self.table.input_buffer.clear();
-                self.set_status("Enter min dz value (m):", StatusLevel::Info);
-            }
-            KeyCode::Char('d') => {
-                self.table.edit_mode = EditMode::DeleteConfirm;
-                self.set_status(
-                    "Delete: [r]ow, [c]olumn, [Esc] cancel",
-                    StatusLevel::Warning,
-                );
-            }
-
-            // Clear path
-            KeyCode::Char('c') => {
-                self.path.clear();
-                self.set_status("Path cleared", StatusLevel::Info);
-            }
-
-            // Focus change
-            KeyCode::Tab => {
-                self.focus = Focus::PathPreview;
-            }
-            KeyCode::BackTab => {
-                self.focus = Focus::Export;
-            }
-
-            // Export modal
-            KeyCode::Char('e') => {
-                self.show_export_modal = true;
-            }
-
-            // Enter suggestion mode (requires loaded mesh)
-            KeyCode::Char('S') => {
-                if self.mesh_info.is_some() {
-                    let mode = SuggestionMode::new();
-                    self.suggestion_mode = Some(mode);
-                    self.set_status(
-                        "Suggestion mode: 1-4 select algorithm, +/- levels, Enter accept, Esc cancel",
-                        StatusLevel::Info,
-                    );
-                    // Trigger initial computation
-                    self.compute_suggestions();
-                } else {
-                    self.set_status(
-                        "Suggestion mode requires a mesh (use -g flag)",
-                        StatusLevel::Warning,
-                    );
-                }
-            }
-
-            _ => {}
-        }
-    }
-
     fn handle_edit_mode_key(&mut self, key: KeyEvent) {
         match key.code {
             KeyCode::Esc => {
@@ -1003,24 +984,30 @@ impl App {
         }
     }
 
-    /// Handle keyboard input in anchor view (navigation mode)
-    fn handle_anchor_view_key(&mut self, key: KeyEvent) {
+    /// Handle keyboard input in unified view (combines anchor editing + profile controls)
+    fn handle_unified_view_key(&mut self, key: KeyEvent) {
         match key.code {
-            // Navigation
+            // Navigation - moves both anchor selection and profile depth
             KeyCode::Up | KeyCode::Char('k') => {
                 if self.anchor_selected > 0 {
                     self.anchor_selected -= 1;
+                    self.profile_depth_idx = self.anchor_selected;
                 }
             }
             KeyCode::Down | KeyCode::Char('j') => {
                 if !self.path.anchors.is_empty() && self.anchor_selected < self.path.anchors.len() - 1 {
                     self.anchor_selected += 1;
+                    self.profile_depth_idx = self.anchor_selected;
                 }
             }
-            KeyCode::Home => self.anchor_selected = 0,
+            KeyCode::Home => {
+                self.anchor_selected = 0;
+                self.profile_depth_idx = 0;
+            }
             KeyCode::End => {
                 if !self.path.anchors.is_empty() {
                     self.anchor_selected = self.path.anchors.len() - 1;
+                    self.profile_depth_idx = self.anchor_selected;
                 }
             }
 
@@ -1041,6 +1028,7 @@ impl App {
                     if self.anchor_selected >= self.path.anchors.len() && self.anchor_selected > 0 {
                         self.anchor_selected -= 1;
                     }
+                    self.profile_depth_idx = self.anchor_selected;
                     self.path.validate();
                     self.set_status("Anchor deleted", StatusLevel::Info);
                 } else {
@@ -1062,18 +1050,11 @@ impl App {
             KeyCode::Char('c') => {
                 self.path.clear();
                 self.anchor_selected = 0;
+                self.profile_depth_idx = 0;
                 self.set_status("All anchors cleared", StatusLevel::Info);
             }
 
-            // Focus change
-            KeyCode::Tab => {
-                self.focus = Focus::PathPreview;
-            }
-            KeyCode::BackTab => {
-                self.focus = Focus::Export;
-            }
-
-            // Export modal (use E since e is for edit)
+            // Export modal
             KeyCode::Char('E') => {
                 self.show_export_modal = true;
             }
@@ -1088,6 +1069,82 @@ impl App {
                 } else {
                     self.set_status("Suggestions require mesh (-g)", StatusLevel::Warning);
                 }
+            }
+
+            // View mode cycle
+            KeyCode::Char('v') => {
+                self.profile_view_mode = match self.profile_view_mode {
+                    ProfileViewMode::SingleDepth => ProfileViewMode::MultiDepth,
+                    ProfileViewMode::MultiDepth => ProfileViewMode::MeshSummary,
+                    ProfileViewMode::MeshSummary => ProfileViewMode::SingleDepth,
+                };
+                let name = match self.profile_view_mode {
+                    ProfileViewMode::SingleDepth => "Single Depth",
+                    ProfileViewMode::MultiDepth => "Multi-Depth",
+                    ProfileViewMode::MeshSummary => "Mesh Summary",
+                };
+                self.set_status(format!("View: {}", name), StatusLevel::Info);
+            }
+
+            // Stretching type cycle
+            KeyCode::Char('t') => {
+                self.export_options.stretching = match self.export_options.stretching {
+                    StretchingType::Quadratic => StretchingType::S,
+                    StretchingType::S => StretchingType::Shchepetkin2005,
+                    StretchingType::Shchepetkin2005 => StretchingType::Shchepetkin2010,
+                    StretchingType::Shchepetkin2010 => StretchingType::Geyer,
+                    StretchingType::Geyer => StretchingType::Quadratic,
+                };
+                let name = match self.export_options.stretching {
+                    StretchingType::Quadratic => "Quadratic",
+                    StretchingType::S => "S-transform",
+                    StretchingType::Shchepetkin2005 => "Shchepetkin2005",
+                    StretchingType::Shchepetkin2010 => "Shchepetkin2010",
+                    StretchingType::Geyer => "Geyer",
+                };
+                self.set_status(format!("Transform: {}", name), StatusLevel::Info);
+            }
+
+            // Stretching parameter controls
+            KeyCode::Char('f') => {
+                self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
+                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
+            }
+            KeyCode::Char('F') => {
+                self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
+                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
+            }
+            KeyCode::Char('b') => {
+                self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(4.0);
+                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
+            }
+            KeyCode::Char('B') => {
+                self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
+                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
+            }
+            KeyCode::Char('s') => {
+                self.export_options.theta_s = (self.export_options.theta_s + 0.5).min(10.0);
+                self.set_status(format!("θs: {:.1}", self.export_options.theta_s), StatusLevel::Info);
+            }
+            KeyCode::Char('h') => {
+                self.export_options.hc = (self.export_options.hc + 1.0).min(100.0);
+                self.set_status(format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info);
+            }
+            KeyCode::Char('H') => {
+                self.export_options.hc = (self.export_options.hc - 1.0).max(1.0);
+                self.set_status(format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info);
+            }
+            KeyCode::Char('A') => {
+                self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
+                self.set_status(format!("a: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
+            }
+            KeyCode::Char('z') => {
+                self.export_options.dz_bottom_min = (self.export_options.dz_bottom_min - 0.1).max(0.1);
+                self.set_status(format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info);
+            }
+            KeyCode::Char('Z') => {
+                self.export_options.dz_bottom_min += 0.1;
+                self.set_status(format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info);
             }
 
             _ => {}
@@ -1205,81 +1262,6 @@ impl App {
         self.anchor_pending_depth = None;
     }
 
-    fn handle_preview_key(&mut self, key: KeyEvent) {
-        match key.code {
-            // Navigation
-            KeyCode::Tab | KeyCode::BackTab => self.focus = Focus::Table,
-            KeyCode::Esc => self.focus = Focus::Table,
-            // Scroll up
-            KeyCode::Up | KeyCode::Char('k') => {
-                if self.preview_scroll > 0 {
-                    self.preview_scroll -= 1;
-                }
-            }
-            // Scroll down
-            KeyCode::Down | KeyCode::Char('j') => {
-                let max_scroll = self.path.anchors.len().saturating_sub(1);
-                if self.preview_scroll < max_scroll {
-                    self.preview_scroll += 1;
-                }
-            }
-            KeyCode::PageUp => {
-                self.preview_scroll = self.preview_scroll.saturating_sub(5);
-            }
-            KeyCode::PageDown => {
-                let max_scroll = self.path.anchors.len().saturating_sub(1);
-                self.preview_scroll = (self.preview_scroll + 5).min(max_scroll);
-            }
-            KeyCode::Home => self.preview_scroll = 0,
-            KeyCode::End => self.preview_scroll = self.path.anchors.len().saturating_sub(1),
-            // Stretching controls (integrated)
-            KeyCode::Char('s') => {
-                self.export_options.stretching = StretchingType::S;
-                self.set_status("S-transform", StatusLevel::Info);
-            }
-            KeyCode::Char('q') => {
-                self.export_options.stretching = StretchingType::Quadratic;
-                self.set_status("Quadratic", StatusLevel::Info);
-            }
-            KeyCode::Char('f') => {
-                self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
-                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
-            }
-            KeyCode::Char('F') => {
-                self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
-                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
-            }
-            KeyCode::Char('b') => {
-                self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
-                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
-            }
-            KeyCode::Char('B') => {
-                self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
-                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
-            }
-            KeyCode::Char('v') => {
-                self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
-                self.set_status(format!("a: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
-            }
-            KeyCode::Char('V') => {
-                self.export_options.a_vqs0 = (self.export_options.a_vqs0 - 0.1).max(-1.0);
-                self.set_status(format!("a: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
-            }
-            // Export
-            KeyCode::Char('e') => {
-                self.show_export_modal = true;
-            }
-            _ => {}
-        }
-    }
-
-    // Note: handle_export_key is kept for backwards compatibility but
-    // Export panel is now integrated into PathPreview
-    fn handle_export_key(&mut self, key: KeyEvent) {
-        // Redirect to preview handler since Export is now integrated
-        self.handle_preview_key(key);
-    }
-
     /// Handle keyboard input in suggestion mode
     fn handle_suggestion_mode_key(&mut self, key: KeyEvent) {
         // Handle Esc first - exit suggestion mode
@@ -1346,6 +1328,9 @@ impl App {
                     format!("Applied {} anchors (table updated)", count),
                     StatusLevel::Success,
                 );
+
+                // Switch to Mesh Summary view (depth percentiles) after accepting
+                self.profile_view_mode = ProfileViewMode::MeshSummary;
             }
             return;
         }
@@ -1674,6 +1659,145 @@ impl App {
         });
 
         stats
+    }
+
+    /// Get cached profile data for single-depth profile view
+    /// Uses interior mutability (RefCell) so it can be called during rendering with &self
+    pub fn get_cached_profile_data(
+        &self,
+        depth: f64,
+        nlevels: usize,
+        first_depth: f64,
+    ) -> (Vec<f64>, bool, usize) {
+        use super::stretching::{compute_z_with_truncation, compute_layer_thicknesses};
+
+        // Check if cache is valid
+        let cache_valid = {
+            let cache_ref = self.cached_profile_data.borrow();
+            if let Some(ref cache) = *cache_ref {
+                (cache.depth - depth).abs() < 0.001
+                    && cache.nlevels == nlevels
+                    && (cache.first_depth - first_depth).abs() < 0.001
+                    && cache.stretching == self.export_options.stretching
+                    && (cache.theta_f - self.export_options.theta_f).abs() < 0.001
+                    && (cache.theta_b - self.export_options.theta_b).abs() < 0.001
+                    && (cache.theta_s - self.export_options.theta_s).abs() < 0.001
+                    && (cache.hc - self.export_options.hc).abs() < 0.001
+                    && (cache.a_vqs0 - self.export_options.a_vqs0).abs() < 0.001
+                    && (cache.dz_bottom_min - self.export_options.dz_bottom_min).abs() < 0.001
+            } else {
+                false
+            }
+        };
+
+        if cache_valid {
+            let cache_ref = self.cached_profile_data.borrow();
+            let cache = cache_ref.as_ref().unwrap();
+            return (cache.thicknesses.clone(), cache.was_truncated, cache.actual_levels);
+        }
+
+        // Compute new profile data
+        let stretch_params = self.get_stretching_params();
+        let stretching_kind = self.get_stretching_kind();
+        let dz_bottom_min = self.export_options.dz_bottom_min;
+
+        let truncation = compute_z_with_truncation(
+            depth, nlevels, &stretch_params, first_depth, dz_bottom_min, stretching_kind,
+        );
+        let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
+
+        // Cache the result
+        *self.cached_profile_data.borrow_mut() = Some(CachedProfileData {
+            thicknesses: thicknesses.clone(),
+            was_truncated: truncation.was_truncated,
+            actual_levels: truncation.actual_levels,
+            depth,
+            nlevels,
+            stretching: self.export_options.stretching,
+            theta_f: self.export_options.theta_f,
+            theta_b: self.export_options.theta_b,
+            theta_s: self.export_options.theta_s,
+            hc: self.export_options.hc,
+            a_vqs0: self.export_options.a_vqs0,
+            dz_bottom_min: self.export_options.dz_bottom_min,
+            first_depth,
+        });
+
+        (thicknesses, truncation.was_truncated, truncation.actual_levels)
+    }
+
+    /// Get cached truncation data for all anchors
+    /// Uses interior mutability (RefCell) so it can be called during rendering with &self
+    pub fn get_cached_truncation_data(
+        &self,
+        anchor_depths: &[f64],
+        anchor_nlevels: &[usize],
+    ) -> Vec<AnchorTruncation> {
+        use super::stretching::compute_z_with_truncation;
+
+        if anchor_depths.is_empty() || anchor_nlevels.is_empty() {
+            return vec![];
+        }
+
+        // Check if cache is valid
+        let cache_valid = {
+            let cache_ref = self.cached_truncation_data.borrow();
+            if let Some(ref cache) = *cache_ref {
+                cache.anchor_depths == anchor_depths
+                    && cache.anchor_nlevels == anchor_nlevels
+                    && cache.stretching == self.export_options.stretching
+                    && (cache.theta_f - self.export_options.theta_f).abs() < 0.001
+                    && (cache.theta_b - self.export_options.theta_b).abs() < 0.001
+                    && (cache.theta_s - self.export_options.theta_s).abs() < 0.001
+                    && (cache.hc - self.export_options.hc).abs() < 0.001
+                    && (cache.a_vqs0 - self.export_options.a_vqs0).abs() < 0.001
+                    && (cache.dz_bottom_min - self.export_options.dz_bottom_min).abs() < 0.001
+            } else {
+                false
+            }
+        };
+
+        if cache_valid {
+            let cache_ref = self.cached_truncation_data.borrow();
+            return cache_ref.as_ref().unwrap().truncations.clone();
+        }
+
+        // Compute truncation for all anchors
+        let stretch_params = self.get_stretching_params();
+        let stretching_kind = self.get_stretching_kind();
+        let dz_bottom_min = self.export_options.dz_bottom_min;
+        let first_depth = anchor_depths.first().copied().unwrap_or(1.0);
+
+        let truncations: Vec<AnchorTruncation> = anchor_depths
+            .iter()
+            .zip(anchor_nlevels.iter())
+            .map(|(&depth, &nlevels)| {
+                let result = compute_z_with_truncation(
+                    depth, nlevels, &stretch_params, first_depth, dz_bottom_min, stretching_kind,
+                );
+                AnchorTruncation {
+                    requested_levels: nlevels,
+                    actual_levels: result.actual_levels,
+                    was_truncated: result.was_truncated,
+                }
+            })
+            .collect();
+
+        // Cache the result
+        *self.cached_truncation_data.borrow_mut() = Some(CachedTruncationData {
+            truncations: truncations.clone(),
+            anchor_depths: anchor_depths.to_vec(),
+            anchor_nlevels: anchor_nlevels.to_vec(),
+            stretching: self.export_options.stretching,
+            theta_f: self.export_options.theta_f,
+            theta_b: self.export_options.theta_b,
+            theta_s: self.export_options.theta_s,
+            hc: self.export_options.hc,
+            a_vqs0: self.export_options.a_vqs0,
+            dz_bottom_min: self.export_options.dz_bottom_min,
+        });
+
+        truncations
     }
 
     /// Convert mouse coordinates to table cell indices

@@ -7,11 +7,25 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Paragraph},
 };
 
-use super::app::{AnchorEditMode, App, Focus, StatusLevel, StretchingType, ViewMode};
-use super::table::EditMode;
-use super::colors::get_cell_colors;
-use super::preview::render_path_preview;
-use super::stretching::{compute_z_with_truncation, compute_layer_thicknesses};
+use super::app::{AnchorEditMode, App, Focus, ProfileViewMode, StatusLevel, StretchingType};
+
+/// Format a layer thickness value with adaptive precision.
+/// Uses more decimal places for small values to avoid misleading "0.00m" displays.
+fn format_dz(value: f64) -> String {
+    if value >= 10.0 {
+        format!("{:>6.1}m", value)
+    } else if value >= 0.01 {
+        format!("{:>6.2}m", value)
+    } else if value >= 0.001 {
+        format!("{:>5.3}m", value) // Show 3 decimals for mm-scale
+    } else if value > 0.0 && value.is_finite() {
+        format!("{:>5.1e}m", value) // Scientific notation for very small
+    } else if value == f64::INFINITY {
+        format!("{:>6}", "N/A") // No valid data
+    } else {
+        format!("{:>6.2}m", value)
+    }
+}
 
 /// Draw the complete UI
 pub fn draw(frame: &mut Frame, app: &mut App) {
@@ -178,35 +192,452 @@ fn render_header(frame: &mut Frame, area: Rect, app: &App) {
 }
 
 fn render_body(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Split body: table (left) + divider (1 col) + side panel (right)
-    // Use app.panel_split for the ratio (user adjustable)
-    let table_pct = app.panel_split;
-    let side_pct = 100 - table_pct;
-
-    let body_layout = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(table_pct),
-            Constraint::Length(1), // Divider
-            Constraint::Percentage(side_pct),
-        ])
-        .split(area);
-
-    // Render left panel based on view mode
-    match app.view_mode {
-        ViewMode::Table => render_table(frame, body_layout[0], app),
-        ViewMode::Anchors => render_anchor_view(frame, body_layout[0], app),
-    }
-
-    render_divider(frame, body_layout[1], app);
-    render_side_panel(frame, body_layout[2], app);
-
-    // Store divider area for mouse hit detection
-    app.divider_area = body_layout[1];
+    // Single full-width panel - unified profile viewer with editing
+    render_unified_viewer(frame, area, app);
 }
 
+/// Unified viewer - full-width panel combining profile visualization and anchor editing
+fn render_unified_viewer(frame: &mut Frame, area: Rect, app: &mut App) {
+    // If in suggestion mode, show suggestion panel
+    if app.suggestion_mode.is_some() {
+        render_suggestion_panel_fullwidth(frame, area, app);
+        return;
+    }
+
+    // Title based on view mode and edit state
+    let mode_name = match app.profile_view_mode {
+        ProfileViewMode::SingleDepth => "Single Depth",
+        ProfileViewMode::MultiDepth => "Multi-Depth",
+        ProfileViewMode::MeshSummary => "Mesh Summary",
+    };
+
+    let edit_indicator = match app.anchor_edit_mode {
+        AnchorEditMode::Navigate => String::new(),
+        AnchorEditMode::AddDepth => format!(" │ Add Depth: {}_", app.anchor_input),
+        AnchorEditMode::AddLevels => {
+            let depth = app.anchor_pending_depth.unwrap_or(0.0);
+            format!(" │ Depth {:.1}m, N: {}_", depth, app.anchor_input)
+        }
+        AnchorEditMode::EditDepth => format!(" │ Edit Depth: {}_", app.anchor_input),
+        AnchorEditMode::EditLevels => format!(" │ Edit N: {}_", app.anchor_input),
+    };
+
+    let anchor_count = app.path.anchors.len();
+    let title = format!(" {} ({} anchors){} ", mode_name, anchor_count, edit_indicator);
+
+    let block = Block::default()
+        .title(title)
+        .title_style(Style::default().fg(Color::Cyan).bold())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Cyan));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    // Split-screen: anchor list (left) + divider (1 col) + profile view (right)
+    let left_pct = app.panel_split;
+    let right_pct = 100 - left_pct;
+
+    let layout = Layout::default()
+        .direction(Direction::Horizontal)
+        .constraints([
+            Constraint::Percentage(left_pct),
+            Constraint::Length(1), // Divider
+            Constraint::Percentage(right_pct),
+        ])
+        .split(inner);
+
+    // Store areas for mouse hit detection and drag calculation
+    app.table_area = layout[0];    // Left panel (anchor list)
+    app.divider_area = layout[1];  // Divider
+    app.preview_area = layout[2];  // Right panel (profile view)
+
+    // Left: anchor list with editing
+    render_anchor_list_panel(frame, layout[0], app);
+
+    // Divider (draggable)
+    render_divider(frame, layout[1], app);
+
+    // Right: profile visualization
+    match app.profile_view_mode {
+        ProfileViewMode::SingleDepth => render_single_depth_profile(frame, layout[2], app),
+        ProfileViewMode::MultiDepth => render_multi_depth_profile(frame, layout[2], app),
+        ProfileViewMode::MeshSummary => render_mesh_summary_profile(frame, layout[2], app),
+    }
+}
+
+/// Empty state when no anchors are defined
+fn render_empty_state(frame: &mut Frame, area: Rect) {
+    let center_y = area.y + area.height / 2 - 2;
+
+    let msg1 = Paragraph::new("No anchors defined")
+        .style(Style::default().fg(Color::DarkGray).italic())
+        .alignment(Alignment::Center);
+    frame.render_widget(msg1, Rect::new(area.x, center_y, area.width, 1));
+
+    let msg2 = Paragraph::new("Press [a] to add an anchor, or [S] for suggestions")
+        .style(Style::default().fg(Color::DarkGray))
+        .alignment(Alignment::Center);
+    frame.render_widget(msg2, Rect::new(area.x, center_y + 2, area.width, 1));
+}
+
+/// Left panel: anchor list with editing controls
+fn render_anchor_list_panel(frame: &mut Frame, area: Rect, app: &App) {
+    if app.path.anchors.is_empty() {
+        render_empty_state(frame, area);
+        return;
+    }
+
+    let mut y = area.y;
+
+    // Header
+    let header = Line::from(vec![
+        Span::styled(format!("{:>3}", "#"), Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::styled(format!("{:>8}", "Depth"), Style::default().fg(Color::White).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>8}", "N"), Style::default().fg(Color::White).bold()),
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    let sep = "─".repeat(area.width.saturating_sub(1) as usize);
+    frame.render_widget(
+        Paragraph::new(sep).style(Style::default().fg(Color::DarkGray)),
+        Rect::new(area.x, y, area.width, 1),
+    );
+    y += 1;
+
+    // Get truncation data (cached)
+    let anchor_depths: Vec<f64> = app.path.anchors.iter().map(|a| a.depth).collect();
+    let anchor_nlevels: Vec<usize> = app.path.anchors.iter().map(|a| a.nlevels).collect();
+    let truncation_data = app.get_cached_truncation_data(&anchor_depths, &anchor_nlevels);
+
+    // Anchors
+    let footer_y = area.y + area.height - 2;
+    for (i, anchor) in app.path.anchors.iter().enumerate() {
+        if y >= footer_y {
+            break;
+        }
+
+        let is_selected = i == app.anchor_selected;
+        let row_style = if is_selected {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+
+        // Format N with truncation indicator
+        let (n_text, n_style) = if let Some(trunc) = truncation_data.get(i) {
+            if trunc.was_truncated {
+                (
+                    format!("{:>3}→{:<3}", trunc.requested_levels, trunc.actual_levels),
+                    Style::default().fg(Color::Yellow),
+                )
+            } else {
+                (
+                    format!("{:>8}", anchor.nlevels),
+                    Style::default().fg(Color::Green),
+                )
+            }
+        } else {
+            (
+                format!("{:>8}", anchor.nlevels),
+                Style::default().fg(Color::Green),
+            )
+        };
+
+        let line = Line::from(vec![
+            Span::styled(format!("{:>3}", i + 1), Style::default().fg(Color::DarkGray)),
+            Span::raw("  "),
+            Span::styled(format!("{:>7.1}m", anchor.depth), Style::default().fg(Color::Green)),
+            Span::raw("  "),
+            Span::styled(n_text, n_style),
+            if is_selected {
+                Span::styled(" ←", Style::default().fg(Color::Cyan).bold())
+            } else {
+                Span::raw("")
+            },
+        ]);
+        frame.render_widget(Paragraph::new(line).style(row_style), Rect::new(area.x, y, area.width, 1));
+        y += 1;
+    }
+
+    // Footer with controls
+    let footer_line = area.y + area.height - 1;
+    let footer = Paragraph::new("[a]dd [d]el [e]dit [S]uggest")
+        .style(Style::default().fg(Color::DarkGray));
+    frame.render_widget(footer, Rect::new(area.x, footer_line, area.width, 1));
+}
+
+/// Right panel: single depth bar chart
+fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
+    if app.path.anchors.is_empty() {
+        return;
+    }
+
+    let depth_idx = app.profile_depth_idx.min(app.path.anchors.len().saturating_sub(1));
+    let anchor = &app.path.anchors[depth_idx];
+    let depth = app.profile_custom_depth.unwrap_or(anchor.depth);
+    let nlevels = anchor.nlevels;
+
+    let mut y = area.y;
+
+    // Header
+    let header = Line::from(vec![
+        Span::styled("Profile at ", Style::default().fg(Color::White)),
+        Span::styled(format!("{:.1}m", depth), Style::default().fg(Color::Green).bold()),
+        Span::styled(format!(" ({} levels)", nlevels), Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
+    y += 2;
+
+    // Get cached profile data
+    let first_depth = app.path.anchors.first().map(|a| a.depth).unwrap_or(1.0);
+    let (thicknesses, _was_truncated, _actual_levels) = app.get_cached_profile_data(depth, nlevels, first_depth);
+
+    if thicknesses.is_empty() {
+        let msg = Paragraph::new("No layers")
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(msg, Rect::new(area.x, y, area.width, 1));
+        return;
+    }
+
+    let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
+    let bar_width = area.width.saturating_sub(14) as usize;
+    let available_height = area.height.saturating_sub(y - area.y + 4) as usize;
+
+    // Show layers
+    let layers_to_show = thicknesses.len().min(available_height);
+    for (i, dz) in thicknesses.iter().take(layers_to_show).enumerate() {
+        let bar_len = if max_dz > 0.0 {
+            ((dz / max_dz) * bar_width as f64) as usize
+        } else {
+            0
+        };
+        let bar = "█".repeat(bar_len.max(1));
+        let line = Line::from(vec![
+            Span::styled(format!("{:>3} ", i + 1), Style::default().fg(Color::DarkGray)),
+            Span::styled(bar, Style::default().fg(Color::Cyan)),
+            Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(Color::White)),
+        ]);
+        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+        y += 1;
+    }
+
+    if thicknesses.len() > layers_to_show {
+        let more = Paragraph::new(format!("... {} more", thicknesses.len() - layers_to_show))
+            .style(Style::default().fg(Color::DarkGray));
+        frame.render_widget(more, Rect::new(area.x, y, area.width, 1));
+    }
+
+    // Stats footer
+    let footer_y = area.y + area.height - 2;
+    let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
+    let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+    let stats = Line::from(vec![
+        Span::styled("min:", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", format_dz(min_dz).trim()), Style::default().fg(Color::Cyan)),
+        Span::styled("avg:", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
+        Span::styled("max:", Style::default().fg(Color::DarkGray)),
+        Span::styled(format_dz(max_dz).trim().to_string(), Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(Paragraph::new(stats), Rect::new(area.x, footer_y, area.width, 1));
+}
+
+/// Right panel: multi-depth stats table
+fn render_multi_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
+    if app.path.anchors.is_empty() {
+        return;
+    }
+
+    let mut y = area.y;
+
+    // Header
+    let header = Line::from(vec![
+        Span::styled(format!("{:>7}", "Depth"), Style::default().fg(Color::White).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>7}", "minΔz"), Style::default().fg(Color::White).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>7}", "avgΔz"), Style::default().fg(Color::White).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>7}", "maxΔz"), Style::default().fg(Color::White).bold()),
+    ]);
+    frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    let sep = "─".repeat(area.width.saturating_sub(1) as usize);
+    frame.render_widget(
+        Paragraph::new(sep).style(Style::default().fg(Color::DarkGray)),
+        Rect::new(area.x, y, area.width, 1),
+    );
+    y += 1;
+
+    // Get zone stats (cached)
+    let anchor_depths: Vec<f64> = app.path.anchors.iter().map(|a| a.depth).collect();
+    let anchor_nlevels: Vec<usize> = app.path.anchors.iter().map(|a| a.nlevels).collect();
+    let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
+
+    // Rows
+    for (i, anchor) in app.path.anchors.iter().enumerate() {
+        if y >= area.y + area.height - 1 {
+            break;
+        }
+
+        let is_selected = i == app.anchor_selected;
+        let (min_dz, avg_dz, max_dz) = if let Some(stats) = zone_stats.get(i) {
+            (stats.min_dz, stats.avg_dz, stats.max_dz)
+        } else {
+            (0.0, 0.0, 0.0)
+        };
+
+        let row_style = if is_selected {
+            Style::default().bg(Color::DarkGray)
+        } else {
+            Style::default()
+        };
+
+        let line = Line::from(vec![
+            Span::styled(format!("{:>6.1}m", anchor.depth), Style::default().fg(Color::Green)),
+            Span::raw("  "),
+            Span::styled(format_dz(min_dz), Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled(format_dz(avg_dz), Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled(format_dz(max_dz), Style::default().fg(Color::Yellow)),
+        ]);
+        frame.render_widget(Paragraph::new(line).style(row_style), Rect::new(area.x, y, area.width, 1));
+        y += 1;
+    }
+}
+
+/// Right panel: mesh summary
+fn render_mesh_summary_profile(frame: &mut Frame, area: Rect, app: &App) {
+    let y = area.y;
+
+    if app.mesh_info.is_none() {
+        let msg = Paragraph::new("No mesh loaded - run with -g <hgrid.gr3>")
+            .style(Style::default().fg(Color::DarkGray).italic());
+        frame.render_widget(msg, Rect::new(area.x, y, area.width, 1));
+        return;
+    }
+
+    let mesh = app.mesh_info.as_ref().unwrap();
+    let mut y = area.y;
+
+    // Mesh info
+    let mesh_header = Paragraph::new(format!(
+        "Mesh: {} ({} nodes)",
+        mesh.path.file_name().map(|s| s.to_string_lossy()).unwrap_or_default(),
+        mesh.node_count
+    )).style(Style::default().fg(Color::Cyan).bold());
+    frame.render_widget(mesh_header, Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    let depth_range = Paragraph::new(format!("Depth: {:.1}m - {:.1}m", mesh.min_depth, mesh.max_depth))
+        .style(Style::default().fg(Color::Green));
+    frame.render_widget(depth_range, Rect::new(area.x, y, area.width, 1));
+    y += 2;
+
+    // Depth percentiles
+    let pct_header = Paragraph::new("Depth percentiles:")
+        .style(Style::default().fg(Color::White).bold());
+    frame.render_widget(pct_header, Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    let pct_labels = ["10%", "25%", "50%", "75%", "90%"];
+    let bar_width = area.width.saturating_sub(16) as usize;
+
+    for (i, &label) in pct_labels.iter().enumerate() {
+        let depth = mesh.percentiles[i];
+        let bar_len = if mesh.max_depth > 0.0 {
+            ((depth / mesh.max_depth) * bar_width as f64) as usize
+        } else {
+            0
+        };
+        let bar = "▓".repeat(bar_len);
+        let line = Line::from(vec![
+            Span::styled(format!("{:>4}", label), Style::default().fg(Color::DarkGray)),
+            Span::raw(" "),
+            Span::styled(bar, Style::default().fg(Color::Blue)),
+            Span::styled(format!(" {:.1}m", depth), Style::default().fg(Color::White)),
+        ]);
+        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+        y += 1;
+    }
+
+    // Coverage
+    if !app.path.anchors.is_empty() {
+        y += 1;
+        let max_anchor_depth = app.path.anchors.last().map(|a| a.depth).unwrap_or(0.0);
+        let coverage = if mesh.max_depth > 0.0 {
+            (max_anchor_depth / mesh.max_depth * 100.0).min(100.0)
+        } else {
+            0.0
+        };
+
+        let coverage_color = if coverage >= 100.0 {
+            Color::Green
+        } else if coverage >= 90.0 {
+            Color::Yellow
+        } else {
+            Color::Red
+        };
+
+        let coverage_line = Line::from(vec![
+            Span::styled("Coverage: ", Style::default().fg(Color::White).bold()),
+            Span::styled(format!("{:.0}%", coverage), Style::default().fg(coverage_color).bold()),
+            Span::styled(format!(" ({:.1}m / {:.1}m)", max_anchor_depth, mesh.max_depth), Style::default().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(coverage_line), Rect::new(area.x, y, area.width, 1));
+    }
+}
+
+/// Full-width suggestion panel - split-screen with draggable divider
+fn render_suggestion_panel_fullwidth(frame: &mut Frame, area: Rect, app: &mut App) {
+    let block = Block::default()
+        .title(" Suggestions ")
+        .title_style(Style::default().fg(Color::Magenta).bold())
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(Color::Magenta));
+
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    if let Some(ref mode) = app.suggestion_mode {
+        // Split-screen: controls (left) + divider (1 col) + preview (right)
+        // Use app.panel_split for the ratio (user adjustable via mouse drag)
+        let left_pct = app.panel_split;
+        let right_pct = 100 - left_pct;
+
+        let layout = Layout::default()
+            .direction(Direction::Horizontal)
+            .constraints([
+                Constraint::Percentage(left_pct),
+                Constraint::Length(1), // Divider
+                Constraint::Percentage(right_pct),
+            ])
+            .split(inner);
+
+        // Store areas for mouse hit detection and drag calculation
+        app.table_area = layout[0];    // Left panel (controls)
+        app.divider_area = layout[1];  // Divider
+        app.preview_area = layout[2];  // Right panel (preview)
+
+        // Left: controls
+        render_suggestion_controls(frame, layout[0], app, mode);
+
+        // Divider (draggable)
+        render_divider(frame, layout[1], app);
+
+        // Right: preview table with truncation display
+        render_suggestion_preview_with_truncation(frame, layout[2], app, mode);
+    }
+}
+
+/// Render draggable vertical divider
 fn render_divider(frame: &mut Frame, area: Rect, app: &App) {
-    // Vertical divider that can be dragged to resize panels
     let style = if app.resizing_panels {
         Style::default().fg(Color::Cyan).bold()
     } else {
@@ -227,641 +658,179 @@ fn render_divider(frame: &mut Frame, area: Rect, app: &App) {
     }
 }
 
-fn render_side_panel(frame: &mut Frame, area: Rect, app: &mut App) {
-    // Single unified panel - either suggestions or path preview
-    // Stretching controls are integrated into the panel content
-    app.preview_area = area;
-    app.export_area = area; // Same area for keyboard focus
+/// Suggestion mode controls (left panel)
+fn render_suggestion_controls(frame: &mut Frame, area: Rect, app: &App, mode: &super::suggestions::SuggestionMode) {
+    let mut y = area.y;
 
-    if app.suggestion_mode.is_some() {
-        render_suggestion_panel(frame, area, app);
-    } else {
-        render_path_preview(frame, area, app);
-    }
-}
-
-fn render_table(frame: &mut Frame, area: Rect, app: &mut App) {
-    let is_focused = app.focus == Focus::Table;
-
-    // Calculate dimensions
-    let cell_width: u16 = 8;
-    let depth_label_width: u16 = 10;
-    let header_height: u16 = 2;
-
-    let title = if app.table.edit_mode != EditMode::Navigate {
-        match app.table.edit_mode {
-            EditMode::AddRow => format!(" Add Depth: {}_ ", app.table.input_buffer),
-            EditMode::AddColumn => format!(" Add Min Δz: {}_ ", app.table.input_buffer),
-            EditMode::DeleteConfirm => " Delete: [r]ow [c]ol [Esc] ".to_string(),
-            _ => " Construction Table ".to_string(),
-        }
-    } else {
-        // Show scroll info in title if scrolled, always show view toggle hint
-        let total_rows = app.table.depths.len();
-        if app.table_scroll_row > 0 || app.table_scroll_col > 0 {
-            format!(" Table [row {}/{}] [v: Anchors] ", app.table_scroll_row + 1, total_rows)
-        } else {
-            " Construction Table [v: Anchors] ".to_string()
-        }
-    };
-
-    let block = Block::default()
-        .title(title)
-        .title_style(Style::default().fg(Color::Cyan).bold())
-        .borders(Borders::ALL)
-        .border_style(if is_focused {
-            Style::default().fg(Color::Cyan)
+    // Algorithm selector
+    let algorithms = [(1, "Exponential"), (2, "Uniform"), (3, "Percentile")];
+    let mut spans = vec![Span::styled("Algorithm: ", Style::default().fg(Color::White).bold())];
+    for (num, name) in algorithms {
+        let is_selected = mode.algorithm.number() == num;
+        let style = if is_selected {
+            Style::default().fg(Color::Cyan).bold()
         } else {
             Style::default().fg(Color::DarkGray)
-        });
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Store table area for mouse hit detection (inner area)
-    app.table_area = inner;
-
-    // Available space for cells (reserve 1 col for scroll indicator)
-    let available_cols = ((inner.width.saturating_sub(depth_label_width + 1)) / cell_width) as usize;
-    let available_rows = (inner.height.saturating_sub(header_height + 1)) as usize; // Reserve 1 for scroll indicator
-
-    let total_rows = app.table.depths.len();
-    let total_cols = app.table.min_dzs.len();
-
-    // Clamp scroll offsets
-    let max_row_scroll = total_rows.saturating_sub(available_rows);
-    let max_col_scroll = total_cols.saturating_sub(available_cols);
-    app.table_scroll_row = app.table_scroll_row.min(max_row_scroll);
-    app.table_scroll_col = app.table_scroll_col.min(max_col_scroll);
-
-    // Auto-scroll to keep cursor visible
-    let (cursor_row, cursor_col) = app.table.cursor;
-    if cursor_row < app.table_scroll_row {
-        app.table_scroll_row = cursor_row;
-    } else if cursor_row >= app.table_scroll_row + available_rows {
-        app.table_scroll_row = cursor_row.saturating_sub(available_rows - 1);
+        };
+        spans.push(Span::styled(format!("[{}]{} ", num, name), style));
     }
-    if cursor_col < app.table_scroll_col {
-        app.table_scroll_col = cursor_col;
-    } else if cursor_col >= app.table_scroll_col + available_cols {
-        app.table_scroll_col = cursor_col.saturating_sub(available_cols - 1);
-    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(area.x, y, area.width, 1));
+    y += 1;
 
-    // Render column headers (min dz values) with scroll offset
-    render_column_headers(
-        frame, inner, &app.table.min_dzs,
-        depth_label_width, cell_width, available_cols, app.table_scroll_col,
+    // Description
+    let desc = Paragraph::new(mode.algorithm.description())
+        .style(Style::default().fg(Color::DarkGray).italic());
+    frame.render_widget(desc, Rect::new(area.x, y, area.width, 1));
+    y += 2;
+
+    // Parameters header
+    let params_header = Paragraph::new("Parameters:")
+        .style(Style::default().fg(Color::White).bold());
+    frame.render_widget(params_header, Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    let param_lines = [
+        (format!("  Levels: {}", mode.params.target_levels), "[+/-]"),
+        (format!("  Anchors: {}", mode.params.num_anchors), "[</>]"),
+        (format!("  Shallow: {}", mode.params.shallow_levels), "[↑/↓]"),
+        (format!("  Δz_surf: {:.1}m", mode.params.dz_surf), "[[/]]"),
+    ];
+    for (text, keys) in param_lines {
+        let line = Line::from(vec![
+            Span::styled(text, Style::default().fg(Color::Cyan)),
+            Span::styled(format!(" {}", keys), Style::default().fg(Color::DarkGray)),
+        ]);
+        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
+        y += 1;
+    }
+    y += 1;
+
+    // Stretching
+    let stretch_header = Paragraph::new("Stretching:")
+        .style(Style::default().fg(Color::White).bold());
+    frame.render_widget(stretch_header, Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    let stretch_name = match app.export_options.stretching {
+        StretchingType::Quadratic => "Quadratic",
+        StretchingType::S => "S-transform",
+        StretchingType::Shchepetkin2005 => "Shchepetkin2005",
+        StretchingType::Shchepetkin2010 => "Shchepetkin2010",
+        StretchingType::Geyer => "Geyer",
+    };
+    let stretch_line = Line::from(vec![
+        Span::styled(format!("  {}", stretch_name), Style::default().fg(Color::Green).bold()),
+        Span::styled(" [t] [i]info", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(stretch_line), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
+    // Stretch params based on type
+    let stretch_params = match app.export_options.stretching {
+        StretchingType::Quadratic => format!("  a: {:.1} [a/A]", app.export_options.a_vqs0),
+        StretchingType::S => format!("  θf:{:.1}[f/F] θb:{:.1}[b/B]", app.export_options.theta_f, app.export_options.theta_b),
+        _ => format!("  θs:{:.1}[s] θb:{:.1}[b] hc:{:.0}[h]", app.export_options.theta_s, app.export_options.theta_b, app.export_options.hc),
+    };
+    frame.render_widget(
+        Paragraph::new(stretch_params).style(Style::default().fg(Color::Cyan)),
+        Rect::new(area.x, y, area.width, 1),
+    );
+    y += 1;
+
+    let dz_bot = format!("  Δz_bot: {:.1}m [z/Z]", app.export_options.dz_bottom_min);
+    frame.render_widget(
+        Paragraph::new(dz_bot).style(Style::default().fg(Color::Cyan)),
+        Rect::new(area.x, y, area.width, 1),
     );
 
-    // Show horizontal scroll indicator in header if needed
-    if app.table_scroll_col > 0 {
-        let indicator = Paragraph::new("◀").style(Style::default().fg(Color::Yellow));
-        frame.render_widget(indicator, Rect::new(inner.x + depth_label_width - 1, inner.y + 1, 1, 1));
-    }
-    if app.table_scroll_col + available_cols < total_cols {
-        let x = inner.x + depth_label_width + (available_cols as u16 * cell_width);
-        let indicator = Paragraph::new("▶").style(Style::default().fg(Color::Yellow));
-        frame.render_widget(indicator, Rect::new(x, inner.y + 1, 1, 1));
-    }
-
-    // Render rows with scroll offset
-    let table_start_y = inner.y + header_height;
-    let mesh_max_depth = app.mesh_info.as_ref().map(|m| m.max_depth);
-
-    let visible_rows = total_rows.saturating_sub(app.table_scroll_row).min(available_rows);
-    for vis_row in 0..visible_rows {
-        let row_idx = app.table_scroll_row + vis_row;
-        let row_y = table_start_y + vis_row as u16;
-
-        // Depth label
-        let depth = app.table.depths[row_idx];
-        let label = if depth >= 1000.0 {
-            format!("{:>7.0}m", depth)
-        } else if depth >= 100.0 {
-            format!("{:>7.1}m", depth)
-        } else {
-            format!("{:>7.2}m", depth)
-        };
-
-        let exceeds_mesh = mesh_max_depth.map(|max| depth > max).unwrap_or(false);
-        let is_row_selected = app.path.is_depth_selected(row_idx);
-        let label_style = if exceeds_mesh {
-            Style::default().fg(Color::DarkGray).add_modifier(Modifier::DIM)
-        } else if app.table.cursor.0 == row_idx {
-            Style::default().fg(Color::Yellow).bold()
-        } else if is_row_selected {
-            Style::default().fg(Color::Green)
-        } else {
-            Style::default().fg(Color::White)
-        };
-
-        let label_widget = Paragraph::new(label).style(label_style);
-        frame.render_widget(label_widget, Rect::new(inner.x, row_y, depth_label_width, 1));
-
-        // Cells for this row with scroll offset
-        let visible_cols = total_cols.saturating_sub(app.table_scroll_col).min(available_cols);
-        for vis_col in 0..visible_cols {
-            let col_idx = app.table_scroll_col + vis_col;
-            let cell_x = inner.x + depth_label_width + (vis_col as u16 * cell_width);
-
-            if let Some(cell) = app.table.cell_values.get(row_idx).and_then(|r| r.get(col_idx)) {
-                let is_cursor = app.table.cursor == (row_idx, col_idx);
-                let is_selected = app.path.is_cell_selected(row_idx, col_idx);
-
-                let (mut fg, mut bg) = get_cell_colors(cell, is_cursor, is_selected);
-
-                if exceeds_mesh && !is_cursor {
-                    fg = Color::DarkGray;
-                    bg = Color::Reset;
-                }
-
-                let text = if cell.validity == super::table::CellValidity::Invalid {
-                    "   -   ".to_string()
-                } else if cell.validity == super::table::CellValidity::Excessive {
-                    "  >120 ".to_string()
-                } else {
-                    format!("{:^7}", cell.n)
-                };
-
-                let mut style = Style::default().fg(fg).bg(bg);
-                if exceeds_mesh {
-                    style = style.add_modifier(Modifier::DIM);
-                }
-                let widget = Paragraph::new(text).style(style);
-                frame.render_widget(widget, Rect::new(cell_x, row_y, cell_width, 1));
-            }
-        }
-    }
-
-    // Show vertical scroll indicators
-    if app.table_scroll_row > 0 {
-        let indicator = Paragraph::new(format!("▲{}", app.table_scroll_row))
-            .style(Style::default().fg(Color::Yellow));
-        frame.render_widget(indicator, Rect::new(inner.x, inner.y + header_height - 1, depth_label_width, 1));
-    }
-    if app.table_scroll_row + available_rows < total_rows {
-        let remaining = total_rows - app.table_scroll_row - available_rows;
-        let indicator = Paragraph::new(format!("▼{}", remaining))
-            .style(Style::default().fg(Color::Yellow));
-        frame.render_widget(indicator, Rect::new(inner.x, inner.y + inner.height - 1, depth_label_width, 1));
-    }
+    // Footer with actions
+    let footer_y = area.y + area.height - 1;
+    let footer = Paragraph::new("[Enter] Accept  [Esc] Cancel")
+        .style(Style::default().fg(Color::Yellow));
+    frame.render_widget(footer, Rect::new(area.x, footer_y, area.width, 1));
 }
 
-/// Render anchor view - direct list of (depth, N) pairs
-fn render_anchor_view(frame: &mut Frame, area: Rect, app: &mut App) {
-    let is_focused = app.focus == Focus::Table; // Same focus as table
+/// Suggestion preview table with truncation display (right panel)
+fn render_suggestion_preview_with_truncation(frame: &mut Frame, area: Rect, app: &App, mode: &super::suggestions::SuggestionMode) {
+    let mut y = area.y;
 
-    // Title shows edit mode or view name
-    let title = match app.anchor_edit_mode {
-        AnchorEditMode::Navigate => " Anchors [v: Table] ".to_string(),
-        AnchorEditMode::AddDepth => format!(" Add Depth: {}_ ", app.anchor_input),
-        AnchorEditMode::AddLevels => {
-            let depth = app.anchor_pending_depth.unwrap_or(0.0);
-            format!(" Depth {:.1}m, N: {}_ ", depth, app.anchor_input)
-        }
-        AnchorEditMode::EditDepth => format!(" Edit Depth: {}_ ", app.anchor_input),
-        AnchorEditMode::EditLevels => format!(" Edit N: {}_ ", app.anchor_input),
-    };
-
-    let block = Block::default()
-        .title(title)
-        .title_style(Style::default().fg(Color::Cyan).bold())
-        .borders(Borders::ALL)
-        .border_style(if is_focused {
-            Style::default().fg(Color::Cyan)
-        } else {
-            Style::default().fg(Color::DarkGray)
-        });
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    // Store area for mouse hit detection
-    app.table_area = inner;
-
-    let mut y = inner.y;
-
-    // Header row
+    // Header
     let header = Line::from(vec![
         Span::styled(format!("{:>3}", "#"), Style::default().fg(Color::DarkGray)),
         Span::raw("  "),
-        Span::styled(format!("{:>8}", "Depth"), Style::default().fg(Color::White).bold()),
+        Span::styled(format!("{:>7}", "Depth"), Style::default().fg(Color::White).bold()),
         Span::raw("  "),
-        Span::styled(format!("{:>4}", "N"), Style::default().fg(Color::White).bold()),
+        Span::styled(format!("{:>8}", "N"), Style::default().fg(Color::White).bold()),
         Span::raw("  "),
-        Span::styled(format!("{:>6}", "minΔz"), Style::default().fg(Color::White).bold()),
-        Span::raw(" "),
-        Span::styled(format!("{:>6}", "avgΔz"), Style::default().fg(Color::White).bold()),
-        Span::raw(" "),
-        Span::styled(format!("{:>6}", "maxΔz"), Style::default().fg(Color::White).bold()),
+        Span::styled(format!("{:>7}", "minΔz"), Style::default().fg(Color::White).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>7}", "avgΔz"), Style::default().fg(Color::White).bold()),
+        Span::raw("  "),
+        Span::styled(format!("{:>7}", "maxΔz"), Style::default().fg(Color::White).bold()),
     ]);
-    frame.render_widget(Paragraph::new(header), Rect::new(inner.x, y, inner.width, 1));
+    frame.render_widget(Paragraph::new(header), Rect::new(area.x, y, area.width, 1));
     y += 1;
 
-    // Separator
-    let sep = "─".repeat(inner.width.saturating_sub(1) as usize);
+    let sep = "─".repeat(area.width.saturating_sub(1) as usize);
     frame.render_widget(
         Paragraph::new(sep).style(Style::default().fg(Color::DarkGray)),
-        Rect::new(inner.x, y, inner.width, 1),
+        Rect::new(area.x, y, area.width, 1),
     );
     y += 1;
 
-    // Get stretching params for dz computation
-    let stretch_params = app.get_stretching_params();
-    let stretching_kind = app.get_stretching_kind();
-    let first_depth = app.path.anchors.first().map(|a| a.depth).unwrap_or(1.0);
-    let dz_bottom_min = app.export_options.dz_bottom_min;
-
-    // Pre-compute zone stats (cached)
-    let anchor_depths: Vec<f64> = app.path.anchors.iter().map(|a| a.depth).collect();
-    let anchor_nlevels: Vec<usize> = app.path.anchors.iter().map(|a| a.nlevels).collect();
+    // Get zone stats and truncation data for preview
+    let anchor_depths: Vec<f64> = mode.preview.iter().map(|a| a.depth).collect();
+    let anchor_nlevels: Vec<usize> = mode.preview.iter().map(|a| a.nlevels).collect();
     let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
+    let truncation_data = app.get_cached_truncation_data(&anchor_depths, &anchor_nlevels);
 
-    // Clamp selected index
-    if !app.path.anchors.is_empty() {
-        app.anchor_selected = app.anchor_selected.min(app.path.anchors.len() - 1);
-    }
-
-    // Render each anchor
-    let footer_y = inner.y + inner.height - 2; // Reserve 2 lines for footer
-    for (i, anchor) in app.path.anchors.iter().enumerate() {
-        if y >= footer_y {
+    // Preview rows
+    for (i, anchor) in mode.preview.iter().enumerate() {
+        if y >= area.y + area.height {
             break;
         }
 
-        let is_selected = i == app.anchor_selected;
-
-        // Get stats from pre-computed zone stats (uses mesh if available)
         let (min_dz, avg_dz, max_dz) = if let Some(stats) = zone_stats.get(i) {
             (stats.min_dz, stats.avg_dz, stats.max_dz)
         } else {
-            // Fallback: compute at anchor depth only
-            let truncation = compute_z_with_truncation(
-                anchor.depth,
-                anchor.nlevels,
-                &stretch_params,
-                first_depth,
-                dz_bottom_min,
-                stretching_kind,
-            );
-            let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
-            if !thicknesses.is_empty() {
-                let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
-                let max = thicknesses.iter().cloned().fold(0.0, f64::max);
-                let avg = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
-                (min, avg, max)
-            } else {
-                (anchor.depth, anchor.depth, anchor.depth)
-            }
+            (0.0, 0.0, 0.0)
         };
-
-        // Compute truncation info for N display
-        let truncation = compute_z_with_truncation(
-            anchor.depth,
-            anchor.nlevels,
-            &stretch_params,
-            first_depth,
-            dz_bottom_min,
-            stretching_kind,
-        );
 
         // Format N with truncation indicator
-        let n_text = if truncation.was_truncated {
-            format!("{:>2}→{:<2}", anchor.nlevels, truncation.actual_levels)
+        let (n_text, n_style) = if let Some(trunc) = truncation_data.get(i) {
+            if trunc.was_truncated {
+                (
+                    format!("{:>3}→{:<3}", trunc.requested_levels, trunc.actual_levels),
+                    Style::default().fg(Color::Yellow),
+                )
+            } else {
+                (
+                    format!("{:>8}", anchor.nlevels),
+                    Style::default().fg(Color::Green),
+                )
+            }
         } else {
-            format!("{:>4}", anchor.nlevels)
-        };
-
-        let row_style = if is_selected {
-            Style::default().bg(Color::DarkGray)
-        } else {
-            Style::default()
+            (
+                format!("{:>8}", anchor.nlevels),
+                Style::default().fg(Color::Green),
+            )
         };
 
         let line = Line::from(vec![
             Span::styled(format!("{:>3}", i + 1), Style::default().fg(Color::DarkGray)),
             Span::raw("  "),
-            Span::styled(format!("{:>7.1}m", anchor.depth), Style::default().fg(Color::Green)),
+            Span::styled(format!("{:>6.1}m", anchor.depth), Style::default().fg(Color::Green)),
             Span::raw("  "),
-            Span::styled(
-                n_text,
-                if truncation.was_truncated {
-                    Style::default().fg(Color::Yellow).bold()
-                } else {
-                    Style::default().fg(Color::Green)
-                },
-            ),
+            Span::styled(n_text, n_style),
             Span::raw("  "),
-            Span::styled(format!("{:>5.1}m", min_dz), Style::default().fg(Color::Cyan)),
-            Span::raw(" "),
-            Span::styled(format!("{:>5.1}m", avg_dz), Style::default().fg(Color::White)),
-            Span::raw(" "),
-            Span::styled(format!("{:>5.1}m", max_dz), Style::default().fg(Color::Yellow)),
-            if is_selected {
-                Span::styled(" ←", Style::default().fg(Color::Cyan).bold())
-            } else {
-                Span::raw("")
-            },
+            Span::styled(format_dz(min_dz), Style::default().fg(Color::Cyan)),
+            Span::raw("  "),
+            Span::styled(format_dz(avg_dz), Style::default().fg(Color::White)),
+            Span::raw("  "),
+            Span::styled(format_dz(max_dz), Style::default().fg(Color::Yellow)),
         ]);
-
-        let para = Paragraph::new(line).style(row_style);
-        frame.render_widget(para, Rect::new(inner.x, y, inner.width, 1));
+        frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
         y += 1;
-    }
-
-    // Empty state
-    if app.path.anchors.is_empty() {
-        let empty = Paragraph::new("  No anchors. Press [a] to add.")
-            .style(Style::default().fg(Color::DarkGray).italic());
-        frame.render_widget(empty, Rect::new(inner.x, y, inner.width, 1));
-    }
-
-    // Footer with controls
-    let footer_line = inner.y + inner.height - 1;
-    let footer = Paragraph::new("[a] Add  [d] Del  [e/Enter] Edit  [E] Export  [v] Table")
-        .style(Style::default().fg(Color::DarkGray))
-        .alignment(Alignment::Center);
-    frame.render_widget(footer, Rect::new(inner.x, footer_line, inner.width, 1));
-}
-
-fn render_column_headers(
-    frame: &mut Frame,
-    area: Rect,
-    min_dzs: &[f64],
-    depth_label_width: u16,
-    cell_width: u16,
-    available_cols: usize,
-    scroll_col: usize,
-) {
-    // First row: "min Δz" label
-    let label = Paragraph::new("   min Δz:").style(Style::default().fg(Color::DarkGray));
-    frame.render_widget(label, Rect::new(area.x, area.y, depth_label_width, 1));
-
-    // Second row: dz values with scroll offset
-    let visible_cols = min_dzs.len().saturating_sub(scroll_col).min(available_cols);
-    for vis_col in 0..visible_cols {
-        let col_idx = scroll_col + vis_col;
-        let dz = min_dzs[col_idx];
-        let cell_x = area.x + depth_label_width + (vis_col as u16 * cell_width);
-
-        let text = if dz >= 100.0 {
-            format!("{:>6.0}m", dz)
-        } else if dz >= 10.0 {
-            format!("{:>6.1}m", dz)
-        } else {
-            format!("{:>6.2}m", dz)
-        };
-
-        let style = Style::default().fg(Color::Cyan);
-        let widget = Paragraph::new(text).style(style).alignment(Alignment::Center);
-        frame.render_widget(widget, Rect::new(cell_x, area.y + 1, cell_width, 1));
-    }
-}
-
-/// Render suggestion panel in the side panel
-fn render_suggestion_panel(frame: &mut Frame, area: Rect, app: &App) {
-    let block = Block::default()
-        .title(" Suggestions ")
-        .title_style(Style::default().fg(Color::Magenta).bold())
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Magenta));
-
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-
-    if let Some(ref mode) = app.suggestion_mode {
-        let mut y = inner.y;
-
-        // Algorithm selector (compact)
-        let algorithms = [(1, "Exp"), (2, "Uni"), (3, "Pct")];
-        let mut spans = vec![Span::styled("Alg: ", Style::default().fg(Color::White))];
-        for (num, name) in algorithms {
-            let is_selected = mode.algorithm.number() == num;
-            let style = if is_selected {
-                Style::default().fg(Color::Cyan).bold()
-            } else {
-                Style::default().fg(Color::DarkGray)
-            };
-            spans.push(Span::styled(format!("[{}]{} ", num, name), style));
-        }
-        frame.render_widget(Paragraph::new(Line::from(spans)), Rect::new(inner.x, y, inner.width, 1));
-        y += 1;
-
-        // Description
-        let desc = Paragraph::new(mode.algorithm.description())
-            .style(Style::default().fg(Color::DarkGray).italic());
-        frame.render_widget(desc, Rect::new(inner.x, y, inner.width, 1));
-        y += 2;
-
-        // Compute zone stats early so we can use them for warnings and display
-        let anchor_depths: Vec<f64> = mode.preview.iter().map(|a| a.depth).collect();
-        let anchor_nlevels: Vec<usize> = mode.preview.iter().map(|a| a.nlevels).collect();
-        let zone_stats = app.get_cached_zone_stats(&anchor_depths, &anchor_nlevels);
-
-        // Parameters (compact, 2 per line)
-        let line1 = Line::from(vec![
-            Span::styled("Lvls:", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>3}", mode.params.target_levels), Style::default().fg(Color::Cyan).bold()),
-            Span::styled(" [+/-]  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Anch:", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>2}", mode.params.num_anchors), Style::default().fg(Color::Cyan).bold()),
-            Span::styled(" [</>]", Style::default().fg(Color::DarkGray)),
-        ]);
-        frame.render_widget(Paragraph::new(line1), Rect::new(inner.x, y, inner.width, 1));
-        y += 1;
-
-        let line2 = Line::from(vec![
-            Span::styled("Shal:", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>3}", mode.params.shallow_levels), Style::default().fg(Color::Cyan).bold()),
-            Span::styled(" [↑/↓]  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Δz₀:", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>4.1}m", mode.params.dz_surf), Style::default().fg(Color::Cyan).bold()),
-            Span::styled(" [[/]]", Style::default().fg(Color::DarkGray)),
-        ]);
-        frame.render_widget(Paragraph::new(line2), Rect::new(inner.x, y, inner.width, 1));
-        y += 1;
-
-        // Stretching parameters (affects dz computation)
-        let stretch_line = match app.export_options.stretching {
-            StretchingType::Quadratic => Line::from(vec![
-                Span::styled("[t]Quad ", Style::default().fg(Color::Green).bold()),
-                Span::styled("a:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.a_vqs0), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[a/A]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" ", Style::default()),
-                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
-            ]),
-            StretchingType::S => Line::from(vec![
-                Span::styled("[t]S ", Style::default().fg(Color::Green).bold()),
-                Span::styled("θf:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_f), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[f/F]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" θb:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" ", Style::default()),
-                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
-            ]),
-            StretchingType::Shchepetkin2005 => Line::from(vec![
-                Span::styled("[t]Shch05 ", Style::default().fg(Color::Green).bold()),
-                Span::styled("θs:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[s/S]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" θb:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" hc:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[h/H]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" ", Style::default()),
-                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
-            ]),
-            StretchingType::Shchepetkin2010 => Line::from(vec![
-                Span::styled("[t]Shch10 ", Style::default().fg(Color::Green).bold()),
-                Span::styled("θs:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[s/S]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" θb:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" hc:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[h/H]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" ", Style::default()),
-                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
-            ]),
-            StretchingType::Geyer => Line::from(vec![
-                Span::styled("[t]Geyer ", Style::default().fg(Color::Green).bold()),
-                Span::styled("θs:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_s), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[s/S]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" θb:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.1}", app.export_options.theta_b), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" hc:", Style::default().fg(Color::White)),
-                Span::styled(format!("{:.0}", app.export_options.hc), Style::default().fg(Color::Cyan).bold()),
-                Span::styled("[h/H]", Style::default().fg(Color::DarkGray)),
-                Span::styled(" ", Style::default()),
-                Span::styled("[i]?", Style::default().fg(Color::Yellow)),
-            ]),
-        };
-        frame.render_widget(Paragraph::new(stretch_line), Rect::new(inner.x, y, inner.width, 1));
-        y += 1;
-
-        // Bottom layer minimum thickness
-        let bottom_line = Line::from(vec![
-            Span::styled("Δz_bot:", Style::default().fg(Color::White)),
-            Span::styled(format!("{:>4.1}m", app.export_options.dz_bottom_min), Style::default().fg(Color::Cyan).bold()),
-            Span::styled(" [z/Z]", Style::default().fg(Color::DarkGray)),
-        ]);
-        frame.render_widget(Paragraph::new(bottom_line), Rect::new(inner.x, y, inner.width, 1));
-        y += 2;
-
-        // Preview header - show N→actual when truncation happens
-        let header = Line::from(vec![
-            Span::styled(format!("{:>6}", "Depth"), Style::default().fg(Color::White).bold()),
-            Span::raw(" "),
-            Span::styled(format!("{:>6}", "N"), Style::default().fg(Color::White).bold()),
-            Span::raw(" "),
-            Span::styled(format!("{:>5}", "minΔz"), Style::default().fg(Color::White).bold()),
-            Span::raw(" "),
-            Span::styled(format!("{:>5}", "avgΔz"), Style::default().fg(Color::White).bold()),
-            Span::raw(" "),
-            Span::styled(format!("{:>5}", "maxΔz"), Style::default().fg(Color::White).bold()),
-        ]);
-        frame.render_widget(Paragraph::new(header), Rect::new(inner.x, y, inner.width, 1));
-        y += 1;
-
-        // Separator
-        let sep = "─".repeat((inner.width.saturating_sub(1)) as usize);
-        frame.render_widget(
-            Paragraph::new(sep).style(Style::default().fg(Color::DarkGray)),
-            Rect::new(inner.x, y, inner.width, 1),
-        );
-        y += 1;
-
-        // Get stretching params for dz computation
-        let stretch_params = app.get_stretching_params();
-        let stretching_kind = app.get_stretching_kind();
-        let first_depth = mode.preview.first().map(|a| a.depth).unwrap_or(1.0);
-        let dz_bottom_min = app.export_options.dz_bottom_min;
-
-        // zone_stats already computed earlier for warning check (and cached)
-
-        // Preview anchors with bottom truncation
-        let footer_y = inner.y + inner.height - 1;
-        for (i, anchor) in mode.preview.iter().enumerate() {
-            if y >= footer_y {
-                break;
-            }
-
-            // Get stats from pre-computed zone stats (uses mesh if available)
-            let (min_dz, avg_dz, max_dz) = if let Some(stats) = zone_stats.get(i) {
-                (stats.min_dz, stats.avg_dz, stats.max_dz)
-            } else {
-                // Fallback: compute at anchor depth only
-                let truncation = compute_z_with_truncation(
-                    anchor.depth,
-                    anchor.nlevels,
-                    &stretch_params,
-                    first_depth,
-                    dz_bottom_min,
-                    stretching_kind,
-                );
-                let thicknesses = compute_layer_thicknesses(&truncation.z_coords);
-                if !thicknesses.is_empty() {
-                    let min = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
-                    let max = thicknesses.iter().cloned().fold(0.0, f64::max);
-                    let avg = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
-                    (min, avg, max)
-                } else {
-                    (anchor.depth, anchor.depth, anchor.depth)
-                }
-            };
-
-            // Compute truncation info for N display
-            let truncation = compute_z_with_truncation(
-                anchor.depth,
-                anchor.nlevels,
-                &stretch_params,
-                first_depth,
-                dz_bottom_min,
-                stretching_kind,
-            );
-
-            // Show N→actual if truncated, otherwise just N
-            let (n_text, n_style) = if truncation.was_truncated {
-                (
-                    format!("{}→{}", anchor.nlevels, truncation.actual_levels),
-                    Style::default().fg(Color::Yellow).bold(),
-                )
-            } else {
-                (
-                    format!("{:>3}", truncation.actual_levels),
-                    Style::default().fg(Color::Green),
-                )
-            };
-
-            let line = Line::from(vec![
-                Span::styled(format!("{:>5.1}m", anchor.depth), Style::default().fg(Color::Green)),
-                Span::raw(" "),
-                Span::styled(format!("{:>6}", n_text), n_style),
-                Span::raw(" "),
-                Span::styled(format!("{:>4.1}m", min_dz), Style::default().fg(Color::Cyan)),
-                Span::raw(" "),
-                Span::styled(format!("{:>4.1}m", avg_dz), Style::default().fg(Color::White)),
-                Span::raw(" "),
-                Span::styled(format!("{:>4.1}m", max_dz), Style::default().fg(Color::Yellow)),
-            ]);
-            frame.render_widget(Paragraph::new(line), Rect::new(inner.x, y, inner.width, 1));
-            y += 1;
-        }
-
-        // Footer
-        let footer = Paragraph::new("[Enter] Accept  [Esc] Cancel")
-            .style(Style::default().fg(Color::Yellow))
-            .alignment(Alignment::Center);
-        frame.render_widget(footer, Rect::new(inner.x, footer_y, inner.width, 1));
     }
 }
 
@@ -881,17 +850,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(msg.text.as_str(), style))
     } else {
         let help = if app.suggestion_mode.is_some() {
-            "1-3: alg | +/-: lvls | [/]: dz | </>: anch | ↑↓: shal | z/Z: bot | t f/F b/B: stretch"
+            "1-3: alg | +/-: lvls | [/]: dz | </>: anch | ↑↓: shal | z/Z: bot | t: stretch"
         } else {
             match app.focus {
-                Focus::Table => {
-                    match app.view_mode {
-                        ViewMode::Table => "Space: select | a/A: add | d: del | v: anchors | e: export | ?: help",
-                        ViewMode::Anchors => "a: add | d: del | e: edit | v: table | E: export | ?: help",
-                    }
-                }
+                Focus::Table => "a: add | d: del | e: edit | E: export | v: profile view | ?: help",
                 Focus::PathPreview | Focus::Export => {
-                    "s/q: stretch | f/F b/B: params | e: export | ?: help"
+                    "↑/↓: depth | t: stretch | a/A f/F b/B: params | e: export | v: view | ?: help"
                 }
             }
         };
@@ -952,27 +916,21 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
  VQS Master Grid Designer - Keyboard & Mouse
 
  NAVIGATION
-   arrows / hjkl    Move cursor in table
-   Tab / Shift+Tab  Cycle between panels
-   Esc              Return to table / close dialogs
+   ↑/↓ or j/k       Navigate anchors / profile depths
+   Tab / Shift+Tab  Switch between anchor editor and profile viewer
+   Esc              Return to anchor editor / close dialogs
 
- SELECTION (Table panel)
-   Space / Enter    Toggle anchor at cursor
-   c                Clear all selections
+ ANCHOR EDITOR (left panel)
+   a                Add new anchor (depth + levels)
+   d                Delete selected anchor
+   e / Enter        Edit selected anchor
+   c                Clear all anchors
    S                Enter suggestion mode (requires mesh)
 
- TABLE EDITING
-   a                Add new depth row
-   A                Add new min Δz column
-   d                Delete row or column
-
- PANEL RESIZE
-   { / }            Shrink / expand table panel
-   Mouse drag       Drag the divider to resize
-
- SCROLLING
-   Mouse wheel      Scroll table or preview
-   Cursor movement  Auto-scrolls to keep cursor visible
+ PROFILE VIEWER (right panel)
+   v                Cycle view mode (Single/Multi/Mesh)
+   ↑/↓              Select depth to visualize
+   t                Cycle stretching type (Quad/S/Shch05/Shch10/Geyer)
 
  SUGGESTION MODE
    1-3              Select algorithm
@@ -981,12 +939,12 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
    < / >            Adjust number of anchors
    ↑ / ↓            Adjust shallow levels
    z / Z            Adjust min bottom layer thickness
-   t/f/F/b/B        Stretching params (affects dz preview)
-   Enter            Accept & update table
+   t                Cycle stretching type
+   Enter            Accept suggestions
    Esc              Cancel
 
- STRETCHING (right panel)
-   t                Cycle transform type (Quad/S/Shch05/Shch10/Geyer)
+ STRETCHING PARAMETERS
+   t                Cycle transform type
    i                Show transform info & parameters help
    f / F            Increase / decrease θf (S-transform)
    b / B            Increase / decrease θb
@@ -994,12 +952,16 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
    h / H            Increase / decrease hc (ROMS transforms)
    a / A            Increase / decrease a_vqs0 (Quadratic)
 
+ PANEL RESIZE
+   { / }            Shrink / expand left panel
+   Mouse drag       Drag the divider to resize
+
  EXPORT
-   e                Open export dialog
+   E                Open export dialog (from anchor editor)
+   e                Open export dialog (from profile viewer)
 
  OTHER
    ? / F1           Toggle this help
-   i                Toggle transform help
    q                Quit application
 "#;
 
