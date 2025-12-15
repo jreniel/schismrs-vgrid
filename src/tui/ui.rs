@@ -27,6 +27,26 @@ fn format_dz(value: f64) -> String {
     }
 }
 
+/// Format a depth range with precision matching the layer thickness.
+/// Uses fixed-width formatting for consistent alignment.
+/// Ensures z_bot - z_top visually matches the displayed dz value.
+fn format_depth_range(z_top: f64, z_bot: f64) -> String {
+    let dz = (z_bot - z_top).abs();
+    if dz >= 10.0 {
+        // Width 5 each: "  0.0→ 10.5" = 11 chars
+        format!("{:>5.1}→{:>5.1}", z_top, z_bot)
+    } else if dz >= 0.1 {
+        // Width 6 each: "  0.00→ 10.35" = 13 chars
+        format!("{:>6.2}→{:>6.2}", z_top, z_bot)
+    } else if dz >= 0.01 {
+        // Width 7 each: "  0.000→ 10.053" = 15 chars
+        format!("{:>7.3}→{:>7.3}", z_top, z_bot)
+    } else {
+        // Width 8 each: "  0.0000→ 10.0053" = 17 chars
+        format!("{:>8.4}→{:>8.4}", z_top, z_bot)
+    }
+}
+
 /// Draw the complete UI
 pub fn draw(frame: &mut Frame, app: &mut App) {
     let area = frame.area();
@@ -461,8 +481,8 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         let z_top = z_coords.get(i).copied().unwrap_or(0.0).abs();
         let z_bot = z_coords.get(i + 1).copied().unwrap_or(depth).abs();
 
-        // Format depth range compactly
-        let range_str = format!("{:.1}→{:.1}", z_top, z_bot);
+        // Format depth range with precision matching layer thickness
+        let range_str = format_depth_range(z_top, z_bot);
 
         // Calculate bar length for this layer's thickness
         let layer_bar_len = if max_dz > 0.0 {
@@ -486,7 +506,7 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         };
 
         let line = Line::from(vec![
-            Span::styled(format!("{:>10} ", range_str), Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("{} ", range_str), Style::default().fg(Color::DarkGray)),
             Span::styled("█".repeat(cyan_len), Style::default().fg(Color::Cyan)),
             Span::styled("█".repeat(white_len), Style::default().fg(Color::White)),
             Span::styled("█".repeat(yellow_len), Style::default().fg(Color::Yellow)),
