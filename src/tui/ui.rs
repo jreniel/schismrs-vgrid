@@ -498,7 +498,7 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
 
     // Allocate remaining space to bar, minimum 10 chars
     let bar_width = (area.width as usize).saturating_sub(range_width + dz_width).max(10);
-    let available_height = area.height.saturating_sub(y - area.y + 4) as usize;
+    let available_height = area.height.saturating_sub(y - area.y + 5) as usize; // +5 for scale + footer
 
     // Pre-compute reference bar lengths for min/avg/max
     let min_bar_len = if max_dz > 0.0 {
@@ -572,17 +572,27 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(more, Rect::new(area.x, y, area.width, 1));
     }
 
+    // Scale line showing what bar length represents
+    let scale_y = area.y + area.height - 3;
+    let scale_bar = "─".repeat(bar_width);
+    let scale_line = Line::from(vec![
+        Span::styled(format!("{:width$}", "", width = range_width), Style::default()),
+        Span::styled(scale_bar, Style::default().fg(Color::DarkGray)),
+        Span::styled(format!(" {}", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
+    ]);
+    frame.render_widget(Paragraph::new(scale_line), Rect::new(area.x, scale_y, area.width, 1));
+
     // Stats footer: avg range (white) and ratio
-    // Cyan (0→min) and Yellow (avg→max) are implied
     let footer_y = area.y + area.height - 2;
     let ratio = if min_dz > 0.0 { max_dz / min_dz } else { 0.0 };
     let stats = Line::from(vec![
-        Span::styled("avg:", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{}→{}", format_dz(min_dz).trim(), format_dz(avg_dz).trim()),
-            Style::default().fg(Color::White),
-        ),
-        Span::styled(" ratio:", Style::default().fg(Color::DarkGray)),
+        Span::styled("dz ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format_dz(min_dz).trim().to_string(), Style::default().fg(Color::Cyan)),
+        Span::styled("→", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
+        Span::styled("→", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
+        Span::styled("ratio:", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{:.1}x", ratio), Style::default().fg(Color::Magenta)),
     ]);
     frame.render_widget(Paragraph::new(stats), Rect::new(area.x, footer_y, area.width, 1));
