@@ -1050,20 +1050,20 @@ fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, 
                     )
                 } else {
                     (
-                        format!("{:>7}", anchor.nlevels),
-                        Style::default().fg(Color::White),
+                        format!("{:>8}", anchor.nlevels),
+                        Style::default().fg(Color::Green),
                     )
                 }
             } else {
                 (
-                    format!("{:>7}", anchor.nlevels),
-                    Style::default().fg(Color::White),
+                    format!("{:>8}", anchor.nlevels),
+                    Style::default().fg(Color::Green),
                 )
             }
         } else {
             (
-                format!("{:>7}", anchor.nlevels),
-                Style::default().fg(Color::White),
+                format!("{:>8}", anchor.nlevels),
+                Style::default().fg(Color::Green),
             )
         };
 
@@ -1072,7 +1072,7 @@ fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, 
 
         let row = Line::from(vec![
             Span::styled(format!("{:>6.1}m", anchor.depth), Style::default().fg(Color::Green)),
-            Span::styled(format!(" {:>7}", n_text), n_style),
+            Span::styled(format!(" {:>8}", n_text), n_style),
             Span::styled(format!("{:>8}", format_dz(min_dz).trim()), Style::default().fg(Color::Cyan)),
             Span::styled(format!("{:>8}", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
             Span::styled(format!("{:>8}", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
