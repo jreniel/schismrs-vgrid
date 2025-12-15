@@ -117,6 +117,9 @@ pub struct App {
     /// Profile viewer mode (right panel)
     pub profile_view_mode: ProfileViewMode,
 
+    /// Show truncation effects in N column (toggle with 'v')
+    pub show_truncation: bool,
+
     /// Selected depth for profile viewer (index into anchor depths, or custom)
     pub profile_depth_idx: usize,
 
@@ -377,6 +380,7 @@ impl App {
             panel_split: 55,
             resizing_panels: false,
             profile_view_mode: ProfileViewMode::default(),
+            show_truncation: true,
             profile_depth_idx: 0,
             profile_custom_depth: None,
             anchor_selected: 0,
@@ -444,6 +448,7 @@ impl App {
             panel_split: 55,
             resizing_panels: false,
             profile_view_mode: ProfileViewMode::default(),
+            show_truncation: true,
             profile_depth_idx: 0,
             profile_custom_depth: None,
             anchor_selected: 0,
@@ -605,20 +610,15 @@ impl App {
                 self.panel_split = (self.panel_split + 5).min(80);
                 return;
             }
-            // Profile view toggle: 'v' cycles through profile view modes
-            KeyCode::Char('v') if self.suggestion_mode.is_none()
-                && self.anchor_edit_mode == AnchorEditMode::Navigate => {
-                self.profile_view_mode = match self.profile_view_mode {
-                    ProfileViewMode::SingleDepth => ProfileViewMode::MultiDepth,
-                    ProfileViewMode::MultiDepth => ProfileViewMode::MeshSummary,
-                    ProfileViewMode::MeshSummary => ProfileViewMode::SingleDepth,
+            // Truncation view toggle: 'v' shows/hides truncation effects
+            KeyCode::Char('v') => {
+                self.show_truncation = !self.show_truncation;
+                let status = if self.show_truncation {
+                    "Truncation: visible"
+                } else {
+                    "Truncation: hidden"
                 };
-                let mode_name = match self.profile_view_mode {
-                    ProfileViewMode::SingleDepth => "Single Depth",
-                    ProfileViewMode::MultiDepth => "Multi-Depth",
-                    ProfileViewMode::MeshSummary => "Mesh Summary",
-                };
-                self.set_status(format!("Profile: {}", mode_name), StatusLevel::Info);
+                self.set_status(status, StatusLevel::Info);
                 return;
             }
             _ => {}
@@ -1108,19 +1108,15 @@ impl App {
                 }
             }
 
-            // View mode cycle
+            // Truncation view toggle
             KeyCode::Char('v') => {
-                self.profile_view_mode = match self.profile_view_mode {
-                    ProfileViewMode::SingleDepth => ProfileViewMode::MultiDepth,
-                    ProfileViewMode::MultiDepth => ProfileViewMode::MeshSummary,
-                    ProfileViewMode::MeshSummary => ProfileViewMode::SingleDepth,
+                self.show_truncation = !self.show_truncation;
+                let status = if self.show_truncation {
+                    "Truncation: visible"
+                } else {
+                    "Truncation: hidden"
                 };
-                let name = match self.profile_view_mode {
-                    ProfileViewMode::SingleDepth => "Single Depth",
-                    ProfileViewMode::MultiDepth => "Multi-Depth",
-                    ProfileViewMode::MeshSummary => "Mesh Summary",
-                };
-                self.set_status(format!("View: {}", name), StatusLevel::Info);
+                self.set_status(status, StatusLevel::Info);
             }
 
             // Stretching type cycle

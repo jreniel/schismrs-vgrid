@@ -359,13 +359,20 @@ fn render_anchor_list_panel(frame: &mut Frame, area: Rect, app: &App) {
             Style::default()
         };
 
-        // Format N with truncation indicator
-        let (n_text, n_style) = if let Some(trunc) = truncation_data.get(i) {
-            if trunc.was_truncated {
-                (
-                    format!("{:>3}→{:<3}", trunc.requested_levels, trunc.actual_levels),
-                    Style::default().fg(Color::Yellow),
-                )
+        // Format N with truncation indicator (if enabled via 'v' toggle)
+        let (n_text, n_style) = if app.show_truncation {
+            if let Some(trunc) = truncation_data.get(i) {
+                if trunc.was_truncated {
+                    (
+                        format!("{:>8}", format!("{}→{}", trunc.requested_levels, trunc.actual_levels)),
+                        Style::default().fg(Color::Yellow),
+                    )
+                } else {
+                    (
+                        format!("{:>8}", anchor.nlevels),
+                        Style::default().fg(Color::Green),
+                    )
+                }
             } else {
                 (
                     format!("{:>8}", anchor.nlevels),
@@ -429,7 +436,7 @@ fn render_anchor_list_panel(frame: &mut Frame, area: Rect, app: &App) {
 
     // Footer with controls
     let footer_line = area.y + area.height - 1;
-    let footer = Paragraph::new("[a]dd [d]el [e]dit [S]uggest")
+    let footer = Paragraph::new("[a]dd [d]el [e]dit [S]uggest [v]truncation")
         .style(Style::default().fg(Color::DarkGray));
     frame.render_widget(footer, Rect::new(area.x, footer_line, area.width, 1));
 }
@@ -1033,13 +1040,20 @@ fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, 
             (f64::INFINITY, 0.0, 0.0)
         };
 
-        // Format N with truncation indicator (right-aligned)
-        let (n_text, n_style) = if let Some(trunc) = truncation_data.get(i) {
-            if trunc.was_truncated {
-                (
-                    format!("{:>3}→{:<3}", trunc.requested_levels, trunc.actual_levels),
-                    Style::default().fg(Color::Yellow),
-                )
+        // Format N with truncation indicator (if enabled via 'v' toggle)
+        let (n_text, n_style) = if app.show_truncation {
+            if let Some(trunc) = truncation_data.get(i) {
+                if trunc.was_truncated {
+                    (
+                        format!("{:>8}", format!("{}→{}", trunc.requested_levels, trunc.actual_levels)),
+                        Style::default().fg(Color::Yellow),
+                    )
+                } else {
+                    (
+                        format!("{:>7}", anchor.nlevels),
+                        Style::default().fg(Color::White),
+                    )
+                }
             } else {
                 (
                     format!("{:>7}", anchor.nlevels),
@@ -1122,13 +1136,20 @@ fn render_suggestion_preview_with_truncation(frame: &mut Frame, area: Rect, app:
             (0.0, 0.0, 0.0)
         };
 
-        // Format N with truncation indicator
-        let (n_text, n_style) = if let Some(trunc) = truncation_data.get(i) {
-            if trunc.was_truncated {
-                (
-                    format!("{:>3}→{:<3}", trunc.requested_levels, trunc.actual_levels),
-                    Style::default().fg(Color::Yellow),
-                )
+        // Format N with truncation indicator (if enabled via 'v' toggle)
+        let (n_text, n_style) = if app.show_truncation {
+            if let Some(trunc) = truncation_data.get(i) {
+                if trunc.was_truncated {
+                    (
+                        format!("{:>8}", format!("{}→{}", trunc.requested_levels, trunc.actual_levels)),
+                        Style::default().fg(Color::Yellow),
+                    )
+                } else {
+                    (
+                        format!("{:>8}", anchor.nlevels),
+                        Style::default().fg(Color::Green),
+                    )
+                }
             } else {
                 (
                     format!("{:>8}", anchor.nlevels),
