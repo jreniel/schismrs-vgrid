@@ -345,8 +345,8 @@ fn render_anchor_list_panel(frame: &mut Frame, area: Rect, app: &App) {
     let anchor_nlevels: Vec<usize> = app.path.anchors.iter().map(|a| a.nlevels).collect();
     let truncation_data = app.get_cached_truncation_data(&anchor_depths, &anchor_nlevels);
 
-    // Anchors
-    let footer_y = area.y + area.height - 2;
+    // Anchors (leave room for stretching line + footer)
+    let footer_y = area.y + area.height - 4;
     for (i, anchor) in app.path.anchors.iter().enumerate() {
         if y >= footer_y {
             break;
@@ -394,6 +394,38 @@ fn render_anchor_list_panel(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(Paragraph::new(line).style(row_style), Rect::new(area.x, y, area.width, 1));
         y += 1;
     }
+
+    // Stretching info (shared state with suggestion mode)
+    let stretch_y = area.y + area.height - 3;
+    let stretch_name = match app.export_options.stretching {
+        StretchingType::Quadratic => "Quad",
+        StretchingType::S => "S",
+        StretchingType::Shchepetkin2005 => "Shch05",
+        StretchingType::Shchepetkin2010 => "Shch10",
+        StretchingType::Geyer => "Geyer",
+    };
+    let stretch_line = match app.export_options.stretching {
+        StretchingType::Quadratic => Line::from(vec![
+            Span::styled(stretch_name, Style::default().fg(Color::Green)),
+            Span::styled("[t] ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("a={:.1}", app.export_options.a_vqs0), Style::default().fg(Color::Green)),
+            Span::styled("[a/A]", Style::default().fg(Color::DarkGray)),
+        ]),
+        StretchingType::S => Line::from(vec![
+            Span::styled(stretch_name, Style::default().fg(Color::Green)),
+            Span::styled("[t] ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θf={:.1}", app.export_options.theta_f), Style::default().fg(Color::Green)),
+            Span::styled("[f/F] ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θb={:.1}", app.export_options.theta_b), Style::default().fg(Color::Green)),
+            Span::styled("[b/B]", Style::default().fg(Color::DarkGray)),
+        ]),
+        _ => Line::from(vec![
+            Span::styled(stretch_name, Style::default().fg(Color::Green)),
+            Span::styled("[t] ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θs={:.1} θb={:.1}", app.export_options.theta_s, app.export_options.theta_b), Style::default().fg(Color::Green)),
+        ]),
+    };
+    frame.render_widget(Paragraph::new(stretch_line), Rect::new(area.x, stretch_y, area.width, 1));
 
     // Footer with controls
     let footer_line = area.y + area.height - 1;
@@ -924,17 +956,33 @@ fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, 
         StretchingType::Shchepetkin2010 => "Shchepetkin2010",
         StretchingType::Geyer => "Geyer",
     };
-    let stretch_params = match app.export_options.stretching {
-        StretchingType::Quadratic => format!("a={:.1}", app.export_options.a_vqs0),
-        StretchingType::S => format!("θf={:.1} θb={:.1}", app.export_options.theta_f, app.export_options.theta_b),
-        _ => format!("θs={:.1} θb={:.1}", app.export_options.theta_s, app.export_options.theta_b),
+    let line3 = match app.export_options.stretching {
+        StretchingType::Quadratic => Line::from(vec![
+            Span::styled("Stretch: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(stretch_name, Style::default().fg(Color::Green).bold()),
+            Span::styled(" [t]  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("a={:.1}", app.export_options.a_vqs0), Style::default().fg(Color::Green)),
+            Span::styled(" [a/A]", Style::default().fg(Color::DarkGray)),
+        ]),
+        StretchingType::S => Line::from(vec![
+            Span::styled("Stretch: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(stretch_name, Style::default().fg(Color::Green).bold()),
+            Span::styled(" [t]  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θf={:.1}", app.export_options.theta_f), Style::default().fg(Color::Green)),
+            Span::styled(" [f/F]  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θb={:.1}", app.export_options.theta_b), Style::default().fg(Color::Green)),
+            Span::styled(" [b/B]", Style::default().fg(Color::DarkGray)),
+        ]),
+        _ => Line::from(vec![
+            Span::styled("Stretch: ", Style::default().fg(Color::DarkGray)),
+            Span::styled(stretch_name, Style::default().fg(Color::Green).bold()),
+            Span::styled(" [t]  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θs={:.1}", app.export_options.theta_s), Style::default().fg(Color::Green)),
+            Span::styled(" [?]  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(format!("θb={:.1}", app.export_options.theta_b), Style::default().fg(Color::Green)),
+            Span::styled(" [b/B]", Style::default().fg(Color::DarkGray)),
+        ]),
     };
-    let line3 = Line::from(vec![
-        Span::styled("Stretch: ", Style::default().fg(Color::DarkGray)),
-        Span::styled(stretch_name, Style::default().fg(Color::Green).bold()),
-        Span::styled(format!(" ({}) ", stretch_params), Style::default().fg(Color::Green)),
-        Span::styled("[t]", Style::default().fg(Color::DarkGray)),
-    ]);
     frame.render_widget(Paragraph::new(line3), Rect::new(area.x, y, area.width, 1));
     y += 1;
 
