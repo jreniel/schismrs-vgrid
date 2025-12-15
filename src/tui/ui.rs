@@ -955,6 +955,15 @@ fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, 
     frame.render_widget(Paragraph::new(line2), Rect::new(area.x, y, area.width, 1));
     y += 1;
 
+    // Parameters line 3: Bottom dz min (for truncation)
+    let line2b = Line::from(vec![
+        Span::styled("Min bottom Δz: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:.2}m", app.export_options.dz_bottom_min), Style::default().fg(Color::Cyan).bold()),
+        Span::styled(" [z/Z]", Style::default().fg(Color::DarkGray)),
+    ]);
+    frame.render_widget(Paragraph::new(line2b), Rect::new(area.x, y, area.width, 1));
+    y += 1;
+
     // Stretching line
     let stretch_name = match app.export_options.stretching {
         StretchingType::Quadratic => "Quadratic",
@@ -1187,7 +1196,7 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(msg.text.as_str(), style))
     } else {
         let help = if app.suggestion_visible {
-            "1-3: alg | +/-: lvls | [/]: dz | </>: anch | ↑↓: shal | z/Z: bot | t: stretch"
+            "1-3: alg | +/-: lvls | [/]: surf | z/Z: bot | </>: anch | s/S: shal | t: stretch"
         } else {
             match app.focus {
                 Focus::Table => "a: add | d: del | e: edit | E: export | v: profile view | ?: help",
@@ -1272,10 +1281,10 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
  SUGGESTION MODE
    1-3              Select algorithm
    + / -            Adjust target levels
-   [ / ]            Adjust min dz
+   [ / ]            Adjust surface dz
+   z / Z            Adjust min bottom dz (truncation)
    < / >            Adjust number of anchors
-   ↑ / ↓            Adjust shallow levels
-   z / Z            Adjust min bottom layer thickness
+   s / S            Adjust shallow levels
    t                Cycle stretching type
    Enter            Accept suggestions
    Esc              Cancel
