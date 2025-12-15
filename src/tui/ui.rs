@@ -505,12 +505,24 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
             0
         };
 
+        // Determine dz color and marker based on where this layer falls
+        let (dz_color, marker) = if (*dz - min_dz).abs() < 1e-9 {
+            (Color::Cyan, " ←min")
+        } else if (*dz - max_dz).abs() < 1e-9 {
+            (Color::Yellow, " ←max")
+        } else if *dz <= avg_dz {
+            (Color::Cyan, "")
+        } else {
+            (Color::Yellow, "")
+        };
+
         let line = Line::from(vec![
             Span::styled(format!("{} ", range_str), Style::default().fg(Color::DarkGray)),
             Span::styled("█".repeat(cyan_len), Style::default().fg(Color::Cyan)),
             Span::styled("█".repeat(white_len), Style::default().fg(Color::White)),
             Span::styled("█".repeat(yellow_len), Style::default().fg(Color::Yellow)),
-            Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(Color::White)),
+            Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(dz_color)),
+            Span::styled(marker, Style::default().fg(Color::DarkGray)),
         ]);
         frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
         y += 1;
