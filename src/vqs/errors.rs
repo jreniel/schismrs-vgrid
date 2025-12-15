@@ -3,9 +3,7 @@
 use crate::transforms::quadratic::QuadraticTransformBuilderError;
 use crate::transforms::s::STransformBuilderError;
 use crate::transforms::transforms::StretchingFunctionError;
-use crate::KMeansHSMCreateError;
 use ndarray::Array1;
-use ndarray_stats::errors::MinMaxError;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -30,43 +28,7 @@ pub enum VQSBuilderError {
     InvalidBottomIndices(String),
 }
 
-#[derive(Error, Debug)]
-pub enum VQSKMeansBuilderError {
-    #[error("Unitialized field on VQSKMeansBuilder: {0}")]
-    UninitializedFieldError(String),
-    #[error(transparent)]
-    VQSBuilderError(#[from] VQSBuilderError),
-    #[error(transparent)]
-    KMeansHSMCreateError(#[from] KMeansHSMCreateError),
-    #[error("shallow_levels must be >= 2")]
-    InvalidShallowLevels,
-    #[error("max_levels must be > shallow_levels but got max_levels={1}, shallow_levels={0}")]
-    InvalidMaxLevels(usize, usize),
-}
-
-#[derive(Error, Debug)]
-pub enum VQSAutoBuilderError {
-    #[error("Unitialized field on VQSAutoBuilder: {0}")]
-    UninitializedFieldError(String),
-    #[error(transparent)]
-    VQSBuilderError(#[from] VQSBuilderError),
-    #[error("shallow_levels must be >= 2 but got {0}")]
-    InvalidShallowLevels(usize),
-    #[error("max_levels must be > shallow_levels but got shallow_levels={0} and max_levels={1}")]
-    InvalidMaxLevels(usize, usize),
-    #[error("initial_depth must be > than etal, but got initial_depth={0} and etal={1}")]
-    InvalidInitialDepth(f64, f64),
-    #[error("ngrids must be >= 2 but got {0}")]
-    InvalidNgridsValue(usize),
-    #[error(transparent)]
-    MinMaxError(#[from] MinMaxError),
-    #[error(transparent)]
-    STransformBuilderError(#[from] STransformBuilderError),
-    #[error(transparent)]
-    QuadraticTransformBuilderError(#[from] QuadraticTransformBuilderError),
-}
-
-// New error types for reconstruction and loading
+// Error types for reconstruction and loading
 #[derive(Error, Debug)]
 pub enum ReconstructionError {
     #[error("Insufficient data: only {0} wet nodes found (minimum: 10)")]

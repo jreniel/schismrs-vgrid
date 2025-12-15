@@ -323,7 +323,7 @@ mod tests {
         // which only need max_depth and don't use hgrid directly
         let params = SuggestionParams {
             target_levels: 30,
-            min_dz: 0.5,
+            dz_surf: 0.5,
             num_anchors: 4,
             shallow_levels: 2,
         };
