@@ -171,18 +171,58 @@ cargo run --release --bin gen_vqs -- /path/to/hgrid.gr3 \
 
 ## Compilation
 
-This crate depends on libproj. Use conda to provide dependencies:
+This crate depends on several native libraries:
+- **libclang** - Required by bindgen to generate Rust FFI bindings
+- **proj** (>= 9.2.0) - Cartographic projections library
+- **sqlite3** - Required by PROJ
+- **zlib** - Required by libcurl (transitive dependency)
+
+### Standard Installation (with system packages)
+
+If your system has the required packages installed:
 
 ```bash
-conda create -n schismrs
-conda activate schismrs
-conda install -c conda-forge compilers clang libclang proj
+# Debian/Ubuntu
+sudo apt install libclang-dev libproj-dev libsqlite3-dev pkg-config
 
-PROJ_SYS_STATIC=1 \
-LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH \
-PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH \
+# Fedora/RHEL
+sudo dnf install clang-devel proj-devel sqlite-devel pkgconfig
+
 cargo build --release
 ```
+
+### HPC / Restricted Environments (using conda/mamba)
+
+On HPC systems or environments where you don't have root access and system libraries are unavailable, use conda/mamba to provide all dependencies:
+
+```bash
+# Create environment with all required dependencies
+mamba create -n schismrs-build -c conda-forge \
+    compilers clang libclang proj sqlite pkg-config cmake zlib
+
+# Activate environment
+mamba activate schismrs-build
+
+# Build with proper environment variables
+LIBCLANG_PATH=$CONDA_PREFIX/lib \
+PKG_CONFIG_PATH=$CONDA_PREFIX/lib/pkgconfig:$PKG_CONFIG_PATH \
+LD_LIBRARY_PATH=$CONDA_PREFIX/lib:$LD_LIBRARY_PATH \
+cargo build --release
+```
+
+**Note:** If your HPC uses environment modules, you may need to load a miniforge/miniconda module first:
+```bash
+module load miniforge3  # or similar
+```
+
+### Troubleshooting
+
+| Error | Solution |
+|-------|----------|
+| `Unable to find libclang` | Set `LIBCLANG_PATH` to directory containing `libclang.so` |
+| `proj.pc not found` | Ensure `PKG_CONFIG_PATH` includes the directory with `proj.pc` |
+| `Package zlib was not found` | Install zlib: `mamba install -c conda-forge zlib` |
+| CMake version errors | Use conda's cmake: `mamba install -c conda-forge cmake` |
 
 ## License
 
