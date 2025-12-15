@@ -911,7 +911,7 @@ fn render_suggestion_controls_unified(frame: &mut Frame, area: Rect, app: &App, 
         Span::styled(" [[/]]  ", Style::default().fg(Color::DarkGray)),
         Span::styled("Shallow: ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{}", mode.params.shallow_levels), Style::default().fg(Color::Cyan).bold()),
-        Span::styled(" [↑/↓]", Style::default().fg(Color::DarkGray)),
+        Span::styled(" [s/S]", Style::default().fg(Color::DarkGray)),
     ]);
     frame.render_widget(Paragraph::new(line2), Rect::new(area.x, y, area.width, 1));
     y += 1;
