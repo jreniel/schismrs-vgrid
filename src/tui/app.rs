@@ -141,6 +141,9 @@ pub struct App {
     /// Pending overwrite confirmation (shows confirm dialog)
     pub pending_overwrite: bool,
 
+    /// Pending clear anchors confirmation (press 'c' again to confirm)
+    pub pending_clear: bool,
+
     /// Whether to show transform help overlay
     pub show_transform_help: bool,
 
@@ -388,6 +391,7 @@ impl App {
             anchor_input: String::new(),
             anchor_pending_depth: None,
             pending_overwrite: false,
+            pending_clear: false,
             show_transform_help: false,
             cached_zone_stats: std::cell::RefCell::new(None),
             cached_profile_data: std::cell::RefCell::new(None),
@@ -456,6 +460,7 @@ impl App {
             anchor_input: String::new(),
             anchor_pending_depth: None,
             pending_overwrite: false,
+            pending_clear: false,
             show_transform_help: false,
             cached_zone_stats: std::cell::RefCell::new(None),
             cached_profile_data: std::cell::RefCell::new(None),
@@ -1008,6 +1013,12 @@ impl App {
 
     /// Handle keyboard input in unified view (combines anchor editing + profile controls)
     fn handle_unified_view_key(&mut self, key: KeyEvent) {
+        // Cancel pending clear if any key other than 'c' is pressed
+        if self.pending_clear && key.code != KeyCode::Char('c') {
+            self.pending_clear = false;
+            self.set_status("Clear cancelled", StatusLevel::Info);
+        }
+
         match key.code {
             // Navigation - moves both anchor selection and profile depth
             KeyCode::Up | KeyCode::Char('k') => {
@@ -1068,12 +1079,20 @@ impl App {
                 }
             }
 
-            // Clear all anchors
+            // Clear all anchors (with confirmation)
             KeyCode::Char('c') => {
-                self.path.clear();
-                self.anchor_selected = 0;
-                self.profile_depth_idx = 0;
-                self.set_status("All anchors cleared", StatusLevel::Info);
+                if self.pending_clear {
+                    // Second press - actually clear
+                    self.path.clear();
+                    self.anchor_selected = 0;
+                    self.profile_depth_idx = 0;
+                    self.pending_clear = false;
+                    self.set_status("All anchors cleared", StatusLevel::Info);
+                } else if !self.path.anchors.is_empty() {
+                    // First press - ask for confirmation
+                    self.pending_clear = true;
+                    self.set_status("Press 'c' again to clear all anchors (any other key cancels)", StatusLevel::Warning);
+                }
             }
 
             // Export modal
