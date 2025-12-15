@@ -27,23 +27,27 @@ fn format_dz(value: f64) -> String {
     }
 }
 
-/// Format a depth range with precision matching the layer thickness.
-/// Uses fixed-width formatting for consistent alignment.
-/// Ensures z_bot - z_top visually matches the displayed dz value.
-fn format_depth_range(z_top: f64, z_bot: f64) -> String {
-    let dz = (z_bot - z_top).abs();
+/// Determine precision level needed for a given dz value
+/// Returns (decimals, field_width) tuple
+fn precision_for_dz(dz: f64) -> (usize, usize) {
     if dz >= 10.0 {
-        // Width 5 each: "  0.0→ 10.5" = 11 chars
-        format!("{:>5.1}→{:>5.1}", z_top, z_bot)
+        (1, 5)  // "  0.0" = 5 chars
     } else if dz >= 0.1 {
-        // Width 6 each: "  0.00→ 10.35" = 13 chars
-        format!("{:>6.2}→{:>6.2}", z_top, z_bot)
+        (2, 6)  // "  0.00" = 6 chars
     } else if dz >= 0.01 {
-        // Width 7 each: "  0.000→ 10.053" = 15 chars
-        format!("{:>7.3}→{:>7.3}", z_top, z_bot)
+        (3, 7)  // "  0.000" = 7 chars
     } else {
-        // Width 8 each: "  0.0000→ 10.0053" = 17 chars
-        format!("{:>8.4}→{:>8.4}", z_top, z_bot)
+        (4, 8)  // "  0.0000" = 8 chars
+    }
+}
+
+/// Format a depth range with specified precision for uniform alignment.
+fn format_depth_range_with_precision(z_top: f64, z_bot: f64, decimals: usize, width: usize) -> String {
+    match decimals {
+        1 => format!("{:>w$.1}→{:>w$.1}", z_top, z_bot, w = width),
+        2 => format!("{:>w$.2}→{:>w$.2}", z_top, z_bot, w = width),
+        3 => format!("{:>w$.3}→{:>w$.3}", z_top, z_bot, w = width),
+        _ => format!("{:>w$.4}→{:>w$.4}", z_top, z_bot, w = width),
     }
 }
 
@@ -455,10 +459,9 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
     let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
     let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
 
-    // Calculate adaptive widths based on actual data
-    // Sample first and last layer to determine range string width
-    let sample_range = format_depth_range(0.0, thicknesses.first().copied().unwrap_or(1.0));
-    let range_width = sample_range.len() + 1; // +1 for trailing space
+    // Use uniform precision based on the thinnest layer (min_dz determines precision for all)
+    let (decimals, field_width) = precision_for_dz(min_dz);
+    let range_width = field_width * 2 + 2; // two fields + arrow + trailing space
     let dz_width = 7; // " X.XXm " format
 
     // Allocate remaining space to bar, minimum 10 chars
@@ -487,8 +490,8 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         let z_top = z_coords.get(i).copied().unwrap_or(0.0).abs();
         let z_bot = z_coords.get(i + 1).copied().unwrap_or(depth).abs();
 
-        // Format depth range with precision matching layer thickness
-        let range_str = format_depth_range(z_top, z_bot);
+        // Format depth range with uniform precision for alignment
+        let range_str = format_depth_range_with_precision(z_top, z_bot, decimals, field_width);
 
         // Calculate bar length for this layer's thickness
         let layer_bar_len = if max_dz > 0.0 {
@@ -537,17 +540,21 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(more, Rect::new(area.x, y, area.width, 1));
     }
 
-    // Stats footer
+    // Stats footer showing dz ranges for each color band
+    // Cyan: min_dz to avg_dz, White: around avg_dz, Yellow: avg_dz to max_dz
     let footer_y = area.y + area.height - 2;
     let ratio = if min_dz > 0.0 { max_dz / min_dz } else { 0.0 };
     let stats = Line::from(vec![
-        Span::styled("min:", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} ", format_dz(min_dz).trim()), Style::default().fg(Color::Cyan)),
-        Span::styled("avg:", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} ", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
-        Span::styled("max:", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} ", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
-        Span::styled(format!("({:.1}x)", ratio), Style::default().fg(Color::Magenta)),
+        Span::styled(
+            format!("{}→{}", format_dz(min_dz).trim(), format_dz(avg_dz).trim()),
+            Style::default().fg(Color::Cyan),
+        ),
+        Span::styled(" ", Style::default()),
+        Span::styled(
+            format!("{}→{}", format_dz(avg_dz).trim(), format_dz(max_dz).trim()),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(format!(" ({:.1}x)", ratio), Style::default().fg(Color::Magenta)),
     ]);
     frame.render_widget(Paragraph::new(stats), Rect::new(area.x, footer_y, area.width, 1));
 }
