@@ -540,8 +540,8 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(more, Rect::new(area.x, y, area.width, 1));
     }
 
-    // Stats footer showing dz ranges for each color band
-    // Cyan (0→min) is implied, White: min→avg, Yellow: avg→max
+    // Stats footer: avg range (white) and ratio
+    // Cyan (0→min) and Yellow (avg→max) are implied
     let footer_y = area.y + area.height - 2;
     let ratio = if min_dz > 0.0 { max_dz / min_dz } else { 0.0 };
     let stats = Line::from(vec![
@@ -549,11 +549,6 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         Span::styled(
             format!("{}→{}", format_dz(min_dz).trim(), format_dz(avg_dz).trim()),
             Style::default().fg(Color::White),
-        ),
-        Span::styled(" max:", Style::default().fg(Color::DarkGray)),
-        Span::styled(
-            format!("{}→{}", format_dz(avg_dz).trim(), format_dz(max_dz).trim()),
-            Style::default().fg(Color::Yellow),
         ),
         Span::styled(format!(" ({:.1}x)", ratio), Style::default().fg(Color::Magenta)),
     ]);
