@@ -550,7 +550,8 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
             format!("{}→{}", format_dz(min_dz).trim(), format_dz(avg_dz).trim()),
             Style::default().fg(Color::White),
         ),
-        Span::styled(format!(" ({:.1}x)", ratio), Style::default().fg(Color::Magenta)),
+        Span::styled(" ratio:", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{:.1}x", ratio), Style::default().fg(Color::Magenta)),
     ]);
     frame.render_widget(Paragraph::new(stats), Rect::new(area.x, footer_y, area.width, 1));
 }
