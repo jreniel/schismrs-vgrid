@@ -496,7 +496,19 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
 
     let max_dz = thicknesses.iter().cloned().fold(0.0, f64::max);
     let min_dz = thicknesses.iter().cloned().fold(f64::INFINITY, f64::min);
-    let avg_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+    let mean_dz = thicknesses.iter().sum::<f64>() / thicknesses.len() as f64;
+
+    // Compute median
+    let median_dz = {
+        let mut sorted = thicknesses.clone();
+        sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let mid = sorted.len() / 2;
+        if sorted.len() % 2 == 0 {
+            (sorted[mid - 1] + sorted[mid]) / 2.0
+        } else {
+            sorted[mid]
+        }
+    };
 
     // Use uniform precision based on the thinnest layer (min_dz determines precision for all)
     let (decimals, field_width) = precision_for_dz(min_dz);
@@ -507,20 +519,7 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
     let bar_width = (area.width as usize).saturating_sub(range_width + dz_width).max(10);
     let available_height = area.height.saturating_sub(y - area.y + 4) as usize; // +4 for footer
 
-    // Pre-compute reference bar lengths for min/avg/max
-    let min_bar_len = if max_dz > 0.0 {
-        ((min_dz / max_dz) * bar_width as f64) as usize
-    } else {
-        0
-    };
-    let avg_bar_len = if max_dz > 0.0 {
-        ((avg_dz / max_dz) * bar_width as f64) as usize
-    } else {
-        0
-    };
-
     // Show layers with depth ranges
-    // Each row shows the layer's thickness bar colored by where it falls relative to min/avg/max
     // z_coords[i] is top of layer i, z_coords[i+1] is bottom
     // z values are negative (depth below surface), so we show absolute values
     let layers_to_show = thicknesses.len().min(available_height);
@@ -532,42 +531,17 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         // Format depth range with uniform precision for alignment
         let range_str = format_depth_range_with_precision(z_top, z_bot, decimals, field_width);
 
-        // Calculate bar length for this layer's thickness
+        // Calculate bar length for this layer's thickness (relative to max)
         let layer_bar_len = if max_dz > 0.0 {
             ((dz / max_dz) * bar_width as f64) as usize
         } else {
             0
-        };
-
-        // Color the bar based on where this layer's thickness falls
-        // Split the bar into segments: up to min (cyan), min to avg (white), avg to max (yellow)
-        let cyan_len = layer_bar_len.min(min_bar_len).max(1);
-        let white_len = if layer_bar_len > min_bar_len {
-            (layer_bar_len - min_bar_len).min(avg_bar_len.saturating_sub(min_bar_len))
-        } else {
-            0
-        };
-        let yellow_len = if layer_bar_len > avg_bar_len {
-            layer_bar_len - avg_bar_len
-        } else {
-            0
-        };
-
-        // Color dz based on where it falls: cyan for thin, white for avg, yellow for thick
-        let dz_color = if *dz <= min_dz * 1.1 {
-            Color::Cyan
-        } else if *dz >= max_dz * 0.9 {
-            Color::Yellow
-        } else {
-            Color::White
-        };
+        }.max(1);
 
         let line = Line::from(vec![
             Span::styled(format!("{} ", range_str), Style::default().fg(Color::DarkGray)),
-            Span::styled("█".repeat(cyan_len), Style::default().fg(Color::Cyan)),
-            Span::styled("█".repeat(white_len), Style::default().fg(Color::White)),
-            Span::styled("█".repeat(yellow_len), Style::default().fg(Color::Yellow)),
-            Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(dz_color)),
+            Span::styled("█".repeat(layer_bar_len), Style::default().fg(Color::Cyan)),
+            Span::styled(format!(" {}", format_dz(*dz).trim()), Style::default().fg(Color::Cyan)),
         ]);
         frame.render_widget(Paragraph::new(line), Rect::new(area.x, y, area.width, 1));
         y += 1;
@@ -579,17 +553,15 @@ fn render_single_depth_profile(frame: &mut Frame, area: Rect, app: &App) {
         frame.render_widget(more, Rect::new(area.x, y, area.width, 1));
     }
 
-    // Stats footer: dz range and ratio
+    // Stats footer: mean, median, and ratio
     let footer_y = area.y + area.height - 2;
     let ratio = if min_dz > 0.0 { max_dz / min_dz } else { 0.0 };
     let stats = Line::from(vec![
-        Span::styled("dz ", Style::default().fg(Color::DarkGray)),
-        Span::styled(format_dz(min_dz).trim().to_string(), Style::default().fg(Color::Cyan)),
-        Span::styled("→", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} ", format_dz(avg_dz).trim()), Style::default().fg(Color::White)),
-        Span::styled("→", Style::default().fg(Color::DarkGray)),
-        Span::styled(format!("{} ", format_dz(max_dz).trim()), Style::default().fg(Color::Yellow)),
-        Span::styled("ratio:", Style::default().fg(Color::DarkGray)),
+        Span::styled("Mean: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", format_dz(mean_dz).trim()), Style::default().fg(Color::Cyan)),
+        Span::styled("Median: ", Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("{} ", format_dz(median_dz).trim()), Style::default().fg(Color::White)),
+        Span::styled("Ratio: ", Style::default().fg(Color::DarkGray)),
         Span::styled(format!("{:.1}x", ratio), Style::default().fg(Color::Magenta)),
     ]);
     frame.render_widget(Paragraph::new(stats), Rect::new(area.x, footer_y, area.width, 1));
