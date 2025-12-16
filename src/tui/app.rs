@@ -147,6 +147,30 @@ pub struct App {
     /// Whether to show transform help overlay
     pub show_transform_help: bool,
 
+    /// Whether to show increment settings panel
+    pub show_increment_panel: bool,
+
+    /// Which increment is selected in the panel (0-9)
+    pub increment_panel_cursor: usize,
+
+    /// Whether currently editing an increment value
+    pub increment_editing: bool,
+
+    /// Input buffer for increment editing
+    pub increment_input: String,
+
+    /// Whether we're in "set value" mode (waiting for param selection)
+    pub param_select_mode: bool,
+
+    /// Which parameter is being edited via direct entry (None = not editing)
+    pub param_editing: Option<ParamEdit>,
+
+    /// Input buffer for direct parameter entry
+    pub param_input: String,
+
+    /// Configurable increment step sizes (inferred from entry precision)
+    pub increments: Increments,
+
     /// Cached zone stats to avoid expensive recomputation every frame
     /// Uses RefCell for interior mutability during rendering
     pub cached_zone_stats: std::cell::RefCell<Option<CachedZoneStats>>,
@@ -256,6 +280,70 @@ pub enum StatusLevel {
     Warning,
     Error,
     Success,
+}
+
+/// Configurable increment step sizes for parameter adjustment
+#[derive(Clone, Debug)]
+pub struct Increments {
+    pub dz_surf: f64,
+    pub dz_bottom_min: f64,
+    pub theta_f: f64,
+    pub theta_b: f64,
+    pub theta_s: f64,
+    pub hc: f64,
+    pub a_vqs0: f64,
+    pub target_levels: i32,
+    pub num_anchors: i32,
+    pub shallow_levels: i32,
+}
+
+impl Default for Increments {
+    fn default() -> Self {
+        Self {
+            dz_surf: 0.1,
+            dz_bottom_min: 0.1,
+            theta_f: 0.5,
+            theta_b: 0.1,
+            theta_s: 0.5,
+            hc: 1.0,
+            a_vqs0: 0.1,
+            target_levels: 1,
+            num_anchors: 1,
+            shallow_levels: 1,
+        }
+    }
+}
+
+/// Which parameter is being edited via direct entry
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ParamEdit {
+    DzSurf,
+    DzBottomMin,
+    ThetaF,
+    ThetaB,
+    ThetaS,
+    Hc,
+    AVqs0,
+    TargetLevels,
+    NumAnchors,
+    ShallowLevels,
+}
+
+impl ParamEdit {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::DzSurf => "Surface Δz",
+            Self::DzBottomMin => "Min bottom Δz",
+            Self::ThetaF => "θf",
+            Self::ThetaB => "θb",
+            Self::ThetaS => "θs",
+            Self::Hc => "hc",
+            Self::AVqs0 => "a_vqs0",
+            Self::TargetLevels => "Target levels",
+            Self::NumAnchors => "Num anchors",
+            Self::ShallowLevels => "Shallow levels",
+        }
+    }
 }
 
 /// Export configuration options
@@ -393,6 +481,14 @@ impl App {
             pending_overwrite: false,
             pending_clear: false,
             show_transform_help: false,
+            show_increment_panel: false,
+            increment_panel_cursor: 0,
+            increment_editing: false,
+            increment_input: String::new(),
+            param_select_mode: false,
+            param_editing: None,
+            param_input: String::new(),
+            increments: Increments::default(),
             cached_zone_stats: std::cell::RefCell::new(None),
             cached_profile_data: std::cell::RefCell::new(None),
             cached_truncation_data: std::cell::RefCell::new(None),
@@ -462,6 +558,14 @@ impl App {
             pending_overwrite: false,
             pending_clear: false,
             show_transform_help: false,
+            show_increment_panel: false,
+            increment_panel_cursor: 0,
+            increment_editing: false,
+            increment_input: String::new(),
+            param_select_mode: false,
+            param_editing: None,
+            param_input: String::new(),
+            increments: Increments::default(),
             cached_zone_stats: std::cell::RefCell::new(None),
             cached_profile_data: std::cell::RefCell::new(None),
             cached_truncation_data: std::cell::RefCell::new(None),
@@ -606,6 +710,17 @@ impl App {
                 self.show_transform_help = false;
                 return;
             }
+            // Increment settings: '`' toggles increment panel
+            KeyCode::Char('`') if !matches!(self.table.edit_mode, EditMode::AddRow | EditMode::AddColumn) => {
+                self.show_increment_panel = !self.show_increment_panel;
+                self.increment_editing = false;
+                self.increment_input.clear();
+                return;
+            }
+            KeyCode::Esc if self.show_increment_panel && !self.increment_editing => {
+                self.show_increment_panel = false;
+                return;
+            }
             // Panel resize: { shrinks left, } expands left
             KeyCode::Char('{') => {
                 self.panel_split = self.panel_split.saturating_sub(5).max(20);
@@ -626,7 +741,31 @@ impl App {
                 self.set_status(status, StatusLevel::Info);
                 return;
             }
+            // Direct value entry: '=' enters param select mode
+            KeyCode::Char('=') if !matches!(self.anchor_edit_mode, AnchorEditMode::AddDepth | AnchorEditMode::AddLevels | AnchorEditMode::EditDepth | AnchorEditMode::EditLevels) => {
+                self.param_select_mode = true;
+                self.set_status("Set value: ] surf  z bot  f θf  b θb  + lvls  < anch  s shal", StatusLevel::Info);
+                return;
+            }
             _ => {}
+        }
+
+        // Handle direct parameter entry mode
+        if self.param_editing.is_some() {
+            self.handle_param_entry_key(key);
+            return;
+        }
+
+        // Handle param select mode (waiting for param key after pressing '=')
+        if self.param_select_mode {
+            self.handle_param_select_key(key);
+            return;
+        }
+
+        // Handle increment panel if active
+        if self.show_increment_panel {
+            self.handle_increment_panel_key(key);
+            return;
         }
 
         // Handle based on edit mode first (table)
@@ -730,19 +869,23 @@ impl App {
 
                 // Check which panel was clicked
                 if self.is_in_rect(x, y, self.table_area) {
-                    self.focus = Focus::Table;
-                    // Check if within table area
-                    if let Some((row, col)) = self.mouse_to_cell(x, y) {
-                        // Toggle selection on click
-                        if self.path.toggle_anchor(&self.table, row, col) {
-                            self.table.cursor = (row, col);
-                            if self.path.is_cell_selected(row, col) {
-                                self.set_status("Anchor added", StatusLevel::Success);
+                    // Only process table clicks when NOT in suggestion mode
+                    // (suggestion mode shows controls, not an interactive table)
+                    if !self.suggestion_visible {
+                        self.focus = Focus::Table;
+                        // Check if within table area
+                        if let Some((row, col)) = self.mouse_to_cell(x, y) {
+                            // Toggle selection on click
+                            if self.path.toggle_anchor(&self.table, row, col) {
+                                self.table.cursor = (row, col);
+                                if self.path.is_cell_selected(row, col) {
+                                    self.set_status("Anchor added", StatusLevel::Success);
+                                } else {
+                                    self.set_status("Anchor removed", StatusLevel::Info);
+                                }
                             } else {
-                                self.set_status("Anchor removed", StatusLevel::Info);
+                                self.set_status("Cannot select this cell", StatusLevel::Warning);
                             }
-                        } else {
-                            self.set_status("Cannot select this cell", StatusLevel::Warning);
                         }
                     }
                 } else if self.is_in_rect(x, y, self.export_area) {
@@ -848,30 +991,33 @@ impl App {
             10 => {
                 // theta_f row - check if clicking left or right half
                 let rel_x = x.saturating_sub(self.export_area.x);
+                let step = self.increments.theta_f;
                 if rel_x > 12 {
-                    self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
+                    self.export_options.theta_f = (self.export_options.theta_f - step).max(0.1);
                 } else {
-                    self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
+                    self.export_options.theta_f = (self.export_options.theta_f + step).min(20.0);
                 }
                 self.set_status(format!("theta_f: {:.1}", self.export_options.theta_f), StatusLevel::Info);
             }
             11 => {
                 // theta_b row
                 let rel_x = x.saturating_sub(self.export_area.x);
+                let step = self.increments.theta_b;
                 if rel_x > 12 {
-                    self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
+                    self.export_options.theta_b = (self.export_options.theta_b - step).max(0.0);
                 } else {
-                    self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
+                    self.export_options.theta_b = (self.export_options.theta_b + step).min(1.0);
                 }
                 self.set_status(format!("theta_b: {:.1}", self.export_options.theta_b), StatusLevel::Info);
             }
             12 => {
                 // a_vqs0 row
                 let rel_x = x.saturating_sub(self.export_area.x);
+                let step = self.increments.a_vqs0;
                 if rel_x > 12 {
-                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 - 0.1).max(-1.0);
+                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 - step).max(-1.0);
                 } else {
-                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
+                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 + step).min(1.0);
                 }
                 self.set_status(format!("a_vqs0: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
             }
@@ -1159,44 +1305,54 @@ impl App {
 
             // Stretching parameter controls
             KeyCode::Char('f') => {
-                self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
-                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
+                let step = self.increments.theta_f;
+                self.export_options.theta_f = (self.export_options.theta_f + step).min(20.0);
+                self.set_status(format!("θf: {:.2}", self.export_options.theta_f), StatusLevel::Info);
             }
             KeyCode::Char('F') => {
-                self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
-                self.set_status(format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info);
+                let step = self.increments.theta_f;
+                self.export_options.theta_f = (self.export_options.theta_f - step).max(0.1);
+                self.set_status(format!("θf: {:.2}", self.export_options.theta_f), StatusLevel::Info);
             }
             KeyCode::Char('b') => {
-                self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(4.0);
-                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
+                let step = self.increments.theta_b;
+                self.export_options.theta_b = (self.export_options.theta_b + step).min(4.0);
+                self.set_status(format!("θb: {:.2}", self.export_options.theta_b), StatusLevel::Info);
             }
             KeyCode::Char('B') => {
-                self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
-                self.set_status(format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info);
+                let step = self.increments.theta_b;
+                self.export_options.theta_b = (self.export_options.theta_b - step).max(0.0);
+                self.set_status(format!("θb: {:.2}", self.export_options.theta_b), StatusLevel::Info);
             }
             KeyCode::Char('s') => {
-                self.export_options.theta_s = (self.export_options.theta_s + 0.5).min(10.0);
-                self.set_status(format!("θs: {:.1}", self.export_options.theta_s), StatusLevel::Info);
+                let step = self.increments.theta_s;
+                self.export_options.theta_s = (self.export_options.theta_s + step).min(10.0);
+                self.set_status(format!("θs: {:.2}", self.export_options.theta_s), StatusLevel::Info);
             }
             KeyCode::Char('h') => {
-                self.export_options.hc = (self.export_options.hc + 1.0).min(100.0);
-                self.set_status(format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info);
+                let step = self.increments.hc;
+                self.export_options.hc = (self.export_options.hc + step).min(100.0);
+                self.set_status(format!("hc: {:.1}m", self.export_options.hc), StatusLevel::Info);
             }
             KeyCode::Char('H') => {
-                self.export_options.hc = (self.export_options.hc - 1.0).max(1.0);
-                self.set_status(format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info);
+                let step = self.increments.hc;
+                self.export_options.hc = (self.export_options.hc - step).max(1.0);
+                self.set_status(format!("hc: {:.1}m", self.export_options.hc), StatusLevel::Info);
             }
             KeyCode::Char('A') => {
-                self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
-                self.set_status(format!("a: {:.1}", self.export_options.a_vqs0), StatusLevel::Info);
+                let step = self.increments.a_vqs0;
+                self.export_options.a_vqs0 = (self.export_options.a_vqs0 + step).min(1.0);
+                self.set_status(format!("a: {:.2}", self.export_options.a_vqs0), StatusLevel::Info);
             }
             KeyCode::Char('z') => {
-                self.export_options.dz_bottom_min = (self.export_options.dz_bottom_min - 0.1).max(0.1);
-                self.set_status(format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info);
+                let step = self.increments.dz_bottom_min;
+                self.export_options.dz_bottom_min = (self.export_options.dz_bottom_min - step).max(0.1);
+                self.set_status(format!("Δz_bot: {:.2}m", self.export_options.dz_bottom_min), StatusLevel::Info);
             }
             KeyCode::Char('Z') => {
-                self.export_options.dz_bottom_min += 0.1;
-                self.set_status(format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info);
+                let step = self.increments.dz_bottom_min;
+                self.export_options.dz_bottom_min += step;
+                self.set_status(format!("Δz_bot: {:.2}m", self.export_options.dz_bottom_min), StatusLevel::Info);
             }
 
             _ => {}
@@ -1437,7 +1593,7 @@ impl App {
             // Adjust target levels
             KeyCode::Char('+') | KeyCode::Char('=') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_target_levels(1);
+                    mode.adjust_target_levels(self.increments.target_levels);
                     needs_recompute = true;
                     Some((format!("Target levels: {}", mode.params.target_levels), StatusLevel::Info))
                 } else {
@@ -1446,7 +1602,7 @@ impl App {
             }
             KeyCode::Char('-') | KeyCode::Char('_') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_target_levels(-1);
+                    mode.adjust_target_levels(-self.increments.target_levels);
                     needs_recompute = true;
                     Some((format!("Target levels: {}", mode.params.target_levels), StatusLevel::Info))
                 } else {
@@ -1458,7 +1614,7 @@ impl App {
             KeyCode::Char(']') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
                     let floor = self.mesh_info.as_ref().map(|m| m.min_wet_depth).unwrap_or(0.01);
-                    mode.adjust_dz_surf(0.1, floor);
+                    mode.adjust_dz_surf(self.increments.dz_surf, floor);
                     needs_recompute = true;
                     Some((format!("Δz₀: {:.2}m", mode.params.dz_surf), StatusLevel::Info))
                 } else {
@@ -1468,7 +1624,7 @@ impl App {
             KeyCode::Char('[') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
                     let floor = self.mesh_info.as_ref().map(|m| m.min_wet_depth).unwrap_or(0.01);
-                    mode.adjust_dz_surf(-0.1, floor);
+                    mode.adjust_dz_surf(-self.increments.dz_surf, floor);
                     needs_recompute = true;
                     Some((format!("Δz₀: {:.2}m", mode.params.dz_surf), StatusLevel::Info))
                 } else {
@@ -1479,7 +1635,7 @@ impl App {
             // Adjust number of anchors
             KeyCode::Char('>') | KeyCode::Char('.') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_num_anchors(1);
+                    mode.adjust_num_anchors(self.increments.num_anchors);
                     needs_recompute = true;
                     Some((format!("Anchors: {}", mode.params.num_anchors), StatusLevel::Info))
                 } else {
@@ -1488,7 +1644,7 @@ impl App {
             }
             KeyCode::Char('<') | KeyCode::Char(',') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_num_anchors(-1);
+                    mode.adjust_num_anchors(-self.increments.num_anchors);
                     needs_recompute = true;
                     Some((format!("Anchors: {}", mode.params.num_anchors), StatusLevel::Info))
                 } else {
@@ -1520,7 +1676,7 @@ impl App {
             // Adjust shallow levels with s/S
             KeyCode::Char('S') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_shallow_levels(1);
+                    mode.adjust_shallow_levels(self.increments.shallow_levels);
                     needs_recompute = true;
                     Some((format!("Shallow levels: {}", mode.params.shallow_levels), StatusLevel::Info))
                 } else {
@@ -1529,7 +1685,7 @@ impl App {
             }
             KeyCode::Char('s') => {
                 if let Some(ref mut mode) = self.suggestion_mode {
-                    mode.adjust_shallow_levels(-1);
+                    mode.adjust_shallow_levels(-self.increments.shallow_levels);
                     needs_recompute = true;
                     Some((format!("Shallow levels: {}", mode.params.shallow_levels), StatusLevel::Info))
                 } else {
@@ -1559,16 +1715,18 @@ impl App {
             // Adjust theta_f (S-transform only): F/f = increase/decrease
             KeyCode::Char('F') => {
                 if matches!(self.export_options.stretching, StretchingType::S) {
-                    self.export_options.theta_f = (self.export_options.theta_f + 0.5).min(20.0);
-                    Some((format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info))
+                    let step = self.increments.theta_f;
+                    self.export_options.theta_f = (self.export_options.theta_f + step).min(20.0);
+                    Some((format!("θf: {:.2}", self.export_options.theta_f), StatusLevel::Info))
                 } else {
                     None
                 }
             }
             KeyCode::Char('f') => {
                 if matches!(self.export_options.stretching, StretchingType::S) {
-                    self.export_options.theta_f = (self.export_options.theta_f - 0.5).max(0.1);
-                    Some((format!("θf: {:.1}", self.export_options.theta_f), StatusLevel::Info))
+                    let step = self.increments.theta_f;
+                    self.export_options.theta_f = (self.export_options.theta_f - step).max(0.1);
+                    Some((format!("θf: {:.2}", self.export_options.theta_f), StatusLevel::Info))
                 } else {
                     None
                 }
@@ -1577,23 +1735,25 @@ impl App {
             // Adjust theta_b (S-transform and ROMS): B/b = increase/decrease
             // For S-transform: range [0, 1], for ROMS: range [0, 4]
             KeyCode::Char('B') => {
+                let step = self.increments.theta_b;
                 match self.export_options.stretching {
                     StretchingType::S => {
-                        self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(1.0);
-                        Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                        self.export_options.theta_b = (self.export_options.theta_b + step).min(1.0);
+                        Some((format!("θb: {:.2}", self.export_options.theta_b), StatusLevel::Info))
                     }
                     StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
-                        self.export_options.theta_b = (self.export_options.theta_b + 0.1).min(4.0);
-                        Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                        self.export_options.theta_b = (self.export_options.theta_b + step).min(4.0);
+                        Some((format!("θb: {:.2}", self.export_options.theta_b), StatusLevel::Info))
                     }
                     _ => None
                 }
             }
             KeyCode::Char('b') => {
+                let step = self.increments.theta_b;
                 match self.export_options.stretching {
                     StretchingType::S | StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
-                        self.export_options.theta_b = (self.export_options.theta_b - 0.1).max(0.0);
-                        Some((format!("θb: {:.1}", self.export_options.theta_b), StatusLevel::Info))
+                        self.export_options.theta_b = (self.export_options.theta_b - step).max(0.0);
+                        Some((format!("θb: {:.2}", self.export_options.theta_b), StatusLevel::Info))
                     }
                     _ => None
                 }
@@ -1601,19 +1761,21 @@ impl App {
 
             // Adjust hc (ROMS transforms only): H/h = increase/decrease
             KeyCode::Char('H') => {
+                let step = self.increments.hc;
                 match self.export_options.stretching {
                     StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
-                        self.export_options.hc = (self.export_options.hc + 1.0).min(100.0);
-                        Some((format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info))
+                        self.export_options.hc = (self.export_options.hc + step).min(100.0);
+                        Some((format!("hc: {:.1}m", self.export_options.hc), StatusLevel::Info))
                     }
                     _ => None
                 }
             }
             KeyCode::Char('h') => {
+                let step = self.increments.hc;
                 match self.export_options.stretching {
                     StretchingType::Shchepetkin2005 | StretchingType::Shchepetkin2010 | StretchingType::Geyer => {
-                        self.export_options.hc = (self.export_options.hc - 1.0).max(1.0);
-                        Some((format!("hc: {:.0}m", self.export_options.hc), StatusLevel::Info))
+                        self.export_options.hc = (self.export_options.hc - step).max(1.0);
+                        Some((format!("hc: {:.1}m", self.export_options.hc), StatusLevel::Info))
                     }
                     _ => None
                 }
@@ -1622,16 +1784,18 @@ impl App {
             // Adjust a_vqs0 (Quadratic): A/a = increase/decrease
             KeyCode::Char('A') => {
                 if matches!(self.export_options.stretching, StretchingType::Quadratic) {
-                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 + 0.1).min(1.0);
-                    Some((format!("a_vqs: {:.1}", self.export_options.a_vqs0), StatusLevel::Info))
+                    let step = self.increments.a_vqs0;
+                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 + step).min(1.0);
+                    Some((format!("a_vqs: {:.2}", self.export_options.a_vqs0), StatusLevel::Info))
                 } else {
                     None
                 }
             }
             KeyCode::Char('a') => {
                 if matches!(self.export_options.stretching, StretchingType::Quadratic) {
-                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 - 0.1).max(-1.0);
-                    Some((format!("a_vqs: {:.1}", self.export_options.a_vqs0), StatusLevel::Info))
+                    let step = self.increments.a_vqs0;
+                    self.export_options.a_vqs0 = (self.export_options.a_vqs0 - step).max(-1.0);
+                    Some((format!("a_vqs: {:.2}", self.export_options.a_vqs0), StatusLevel::Info))
                 } else {
                     None
                 }
@@ -1639,12 +1803,14 @@ impl App {
 
             // Adjust dz_bottom_min: Z/z = increase/decrease (no upper cap)
             KeyCode::Char('Z') => {
-                self.export_options.dz_bottom_min += 0.1;
-                Some((format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info))
+                let step = self.increments.dz_bottom_min;
+                self.export_options.dz_bottom_min += step;
+                Some((format!("Δz_bot: {:.2}m", self.export_options.dz_bottom_min), StatusLevel::Info))
             }
             KeyCode::Char('z') => {
-                self.export_options.dz_bottom_min = (self.export_options.dz_bottom_min - 0.1).max(0.1);
-                Some((format!("Δz_bot: {:.1}m", self.export_options.dz_bottom_min), StatusLevel::Info))
+                let step = self.increments.dz_bottom_min;
+                self.export_options.dz_bottom_min = (self.export_options.dz_bottom_min - step).max(0.1);
+                Some((format!("Δz_bot: {:.2}m", self.export_options.dz_bottom_min), StatusLevel::Info))
             }
 
             _ => None,
@@ -1659,6 +1825,307 @@ impl App {
         if needs_recompute {
             self.compute_suggestions();
         }
+    }
+
+    /// Handle parameter selection after pressing '='
+    /// Maps single-char keys to ParamEdit variants
+    fn handle_param_select_key(&mut self, key: KeyEvent) {
+        let param = match key.code {
+            KeyCode::Char(']') => Some(ParamEdit::DzSurf),
+            KeyCode::Char('z') => Some(ParamEdit::DzBottomMin),
+            KeyCode::Char('f') => Some(ParamEdit::ThetaF),
+            KeyCode::Char('b') => Some(ParamEdit::ThetaB),
+            KeyCode::Char('s') => Some(ParamEdit::ThetaS),
+            KeyCode::Char('h') => Some(ParamEdit::Hc),
+            KeyCode::Char('a') => Some(ParamEdit::AVqs0),
+            KeyCode::Char('+') => Some(ParamEdit::TargetLevels),
+            KeyCode::Char('<') => Some(ParamEdit::NumAnchors),
+            KeyCode::Char('l') => Some(ParamEdit::ShallowLevels),
+            KeyCode::Esc => {
+                self.param_select_mode = false;
+                self.set_status("Cancelled", StatusLevel::Info);
+                return;
+            }
+            _ => None,
+        };
+
+        if let Some(p) = param {
+            self.param_select_mode = false;
+            self.param_editing = Some(p);
+            self.param_input.clear();
+
+            // Get current value for display
+            let current = match p {
+                ParamEdit::DzSurf => {
+                    self.suggestion_mode.as_ref().map(|m| m.params.dz_surf).unwrap_or(0.5)
+                }
+                ParamEdit::DzBottomMin => self.export_options.dz_bottom_min,
+                ParamEdit::ThetaF => self.export_options.theta_f,
+                ParamEdit::ThetaB => self.export_options.theta_b,
+                ParamEdit::ThetaS => self.export_options.theta_s,
+                ParamEdit::Hc => self.export_options.hc,
+                ParamEdit::AVqs0 => self.export_options.a_vqs0,
+                ParamEdit::TargetLevels => {
+                    self.suggestion_mode.as_ref().map(|m| m.params.target_levels as f64).unwrap_or(30.0)
+                }
+                ParamEdit::NumAnchors => {
+                    self.suggestion_mode.as_ref().map(|m| m.params.num_anchors as f64).unwrap_or(4.0)
+                }
+                ParamEdit::ShallowLevels => {
+                    self.suggestion_mode.as_ref().map(|m| m.params.shallow_levels as f64).unwrap_or(2.0)
+                }
+            };
+
+            let hint = match p {
+                ParamEdit::TargetLevels | ParamEdit::NumAnchors | ParamEdit::ShallowLevels => {
+                    format!("Enter {}: _ (current: {})", p.label(), current as i32)
+                }
+                _ => {
+                    format!("Enter {}: _ (current: {:.2})", p.label(), current)
+                }
+            };
+            self.set_status(hint, StatusLevel::Info);
+        }
+    }
+
+    /// Handle direct parameter entry input
+    /// Accepts digits, '.', Backspace, Enter, Esc
+    fn handle_param_entry_key(&mut self, key: KeyEvent) {
+        match key.code {
+            KeyCode::Esc => {
+                self.param_editing = None;
+                self.param_input.clear();
+                self.set_status("Cancelled", StatusLevel::Info);
+            }
+            KeyCode::Enter => {
+                self.commit_param_entry();
+            }
+            KeyCode::Char(c) if c.is_ascii_digit() || c == '.' || c == '-' => {
+                // Allow minus only at the start (for negative values like a_vqs0)
+                if c == '-' && !self.param_input.is_empty() {
+                    return;
+                }
+                // Prevent multiple dots
+                if c == '.' && self.param_input.contains('.') {
+                    return;
+                }
+                self.param_input.push(c);
+                // Update status to show current input
+                if let Some(p) = self.param_editing {
+                    self.set_status(format!("Enter {}: {}_", p.label(), self.param_input), StatusLevel::Info);
+                }
+            }
+            KeyCode::Backspace => {
+                self.param_input.pop();
+                // Update status to show current input
+                if let Some(p) = self.param_editing {
+                    let display = if self.param_input.is_empty() { "_" } else { &self.param_input };
+                    self.set_status(format!("Enter {}: {}_", p.label(), display), StatusLevel::Info);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// Commit the direct parameter entry (value only, increments set via panel)
+    fn commit_param_entry(&mut self) {
+        let Some(param) = self.param_editing else {
+            return;
+        };
+
+        if self.param_input.is_empty() {
+            self.param_editing = None;
+            self.set_status("Cancelled (empty input)", StatusLevel::Info);
+            return;
+        }
+
+        // Parse the value
+        let result: Result<f64, _> = self.param_input.parse();
+        let Ok(value) = result else {
+            self.set_status(format!("Invalid number: {}", self.param_input), StatusLevel::Error);
+            self.param_input.clear();
+            return;
+        };
+
+        // Apply the value only (increments are set via the ` panel)
+        let status_msg = match param {
+            ParamEdit::DzSurf => {
+                if value > 0.0 {
+                    if let Some(ref mut mode) = self.suggestion_mode {
+                        mode.params.dz_surf = value;
+                    }
+                    self.compute_suggestions();
+                    format!("Δz₀: {:.2}m", value)
+                } else {
+                    self.set_status("Value must be positive", StatusLevel::Error);
+                    self.param_input.clear();
+                    return;
+                }
+            }
+            ParamEdit::DzBottomMin => {
+                if value > 0.0 {
+                    self.export_options.dz_bottom_min = value;
+                    format!("Δz_bot: {:.2}m", value)
+                } else {
+                    self.set_status("Value must be positive", StatusLevel::Error);
+                    self.param_input.clear();
+                    return;
+                }
+            }
+            ParamEdit::ThetaF => {
+                let clamped = value.clamp(0.1, 20.0);
+                self.export_options.theta_f = clamped;
+                format!("θf: {:.2}", clamped)
+            }
+            ParamEdit::ThetaB => {
+                let max = if matches!(self.export_options.stretching, StretchingType::S) { 1.0 } else { 4.0 };
+                let clamped = value.clamp(0.0, max);
+                self.export_options.theta_b = clamped;
+                format!("θb: {:.2}", clamped)
+            }
+            ParamEdit::ThetaS => {
+                let clamped = value.clamp(0.0, 10.0);
+                self.export_options.theta_s = clamped;
+                format!("θs: {:.2}", clamped)
+            }
+            ParamEdit::Hc => {
+                let clamped = value.clamp(1.0, 100.0);
+                self.export_options.hc = clamped;
+                format!("hc: {:.1}m", clamped)
+            }
+            ParamEdit::AVqs0 => {
+                let clamped = value.clamp(-1.0, 1.0);
+                self.export_options.a_vqs0 = clamped;
+                format!("a_vqs: {:.2}", clamped)
+            }
+            ParamEdit::TargetLevels => {
+                let int_val = value.round() as i32;
+                if int_val >= 2 {
+                    if let Some(ref mut mode) = self.suggestion_mode {
+                        mode.params.target_levels = int_val as usize;
+                    }
+                    self.compute_suggestions();
+                    format!("Target levels: {}", int_val)
+                } else {
+                    self.set_status("Target levels must be >= 2", StatusLevel::Error);
+                    self.param_input.clear();
+                    return;
+                }
+            }
+            ParamEdit::NumAnchors => {
+                let int_val = value.round() as i32;
+                if int_val >= 2 {
+                    if let Some(ref mut mode) = self.suggestion_mode {
+                        mode.params.num_anchors = int_val as usize;
+                    }
+                    self.compute_suggestions();
+                    format!("Anchors: {}", int_val)
+                } else {
+                    self.set_status("Num anchors must be >= 2", StatusLevel::Error);
+                    self.param_input.clear();
+                    return;
+                }
+            }
+            ParamEdit::ShallowLevels => {
+                let int_val = value.round() as i32;
+                if int_val >= 2 {
+                    if let Some(ref mut mode) = self.suggestion_mode {
+                        mode.params.shallow_levels = int_val as usize;
+                    }
+                    self.compute_suggestions();
+                    format!("Shallow levels: {}", int_val)
+                } else {
+                    self.set_status("Shallow levels must be >= 2", StatusLevel::Error);
+                    self.param_input.clear();
+                    return;
+                }
+            }
+        };
+
+        self.param_editing = None;
+        self.param_input.clear();
+        self.set_status(status_msg, StatusLevel::Success);
+    }
+
+    /// Handle keyboard input for the increment settings panel
+    fn handle_increment_panel_key(&mut self, key: KeyEvent) {
+        if self.increment_editing {
+            // In editing mode: handle text input
+            match key.code {
+                KeyCode::Esc => {
+                    self.increment_editing = false;
+                    self.increment_input.clear();
+                }
+                KeyCode::Enter => {
+                    self.commit_increment_edit();
+                }
+                KeyCode::Char(c) if c.is_ascii_digit() || c == '.' => {
+                    // Prevent multiple dots
+                    if c == '.' && self.increment_input.contains('.') {
+                        return;
+                    }
+                    self.increment_input.push(c);
+                }
+                KeyCode::Backspace => {
+                    self.increment_input.pop();
+                }
+                _ => {}
+            }
+        } else {
+            // In navigation mode
+            match key.code {
+                KeyCode::Up | KeyCode::Char('k') => {
+                    if self.increment_panel_cursor > 0 {
+                        self.increment_panel_cursor -= 1;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    if self.increment_panel_cursor < 9 {
+                        self.increment_panel_cursor += 1;
+                    }
+                }
+                KeyCode::Enter => {
+                    self.increment_editing = true;
+                    self.increment_input.clear();
+                }
+                KeyCode::Char('`') => {
+                    self.show_increment_panel = false;
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// Commit the edited increment value
+    fn commit_increment_edit(&mut self) {
+        if self.increment_input.is_empty() {
+            self.increment_editing = false;
+            return;
+        }
+
+        let Ok(value) = self.increment_input.parse::<f64>() else {
+            self.increment_editing = false;
+            self.increment_input.clear();
+            return;
+        };
+
+        // Apply to the selected increment
+        match self.increment_panel_cursor {
+            0 => self.increments.dz_surf = value.max(0.001),
+            1 => self.increments.dz_bottom_min = value.max(0.001),
+            2 => self.increments.theta_f = value.max(0.001),
+            3 => self.increments.theta_b = value.max(0.001),
+            4 => self.increments.theta_s = value.max(0.001),
+            5 => self.increments.hc = value.max(0.001),
+            6 => self.increments.a_vqs0 = value.max(0.001),
+            7 => self.increments.target_levels = (value.round() as i32).max(1),
+            8 => self.increments.num_anchors = (value.round() as i32).max(1),
+            9 => self.increments.shallow_levels = (value.round() as i32).max(1),
+            _ => {}
+        }
+
+        self.increment_editing = false;
+        self.increment_input.clear();
     }
 
     /// Get stretching parameters from export options
@@ -2199,3 +2666,4 @@ impl App {
         yaml
     }
 }
+

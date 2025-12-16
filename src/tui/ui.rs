@@ -79,6 +79,11 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         render_transform_help_overlay(frame, area, app);
     }
 
+    // Increment settings panel if active
+    if app.show_increment_panel {
+        render_increment_panel(frame, area, app);
+    }
+
     // Help overlay if active (on top of everything)
     if app.show_help {
         render_help_overlay(frame, area);
@@ -1168,12 +1173,12 @@ fn render_footer(frame: &mut Frame, area: Rect, app: &App) {
         Line::from(Span::styled(msg.text.as_str(), style))
     } else {
         let help = if app.suggestion_visible {
-            "1-3: alg | +/-: lvls | [/]: surf | z/Z: bot | </>: anch | s/S: shal | t: stretch"
+            "1-3: alg | +/-: lvls | [/]: surf | z/Z: bot | </>: anch | t: stretch | `: steps"
         } else {
             match app.focus {
-                Focus::Table => "a: add | d: del | e: edit | E: export | v: profile view | ?: help",
+                Focus::Table => "a: add | d: del | e: edit | E: export | `: steps | ?: help",
                 Focus::PathPreview | Focus::Export => {
-                    "↑/↓: depth | t: stretch | a/A f/F b/B: params | e: export | v: view | ?: help"
+                    "↑/↓: depth | t: stretch | f/F b/B: params | `: steps | ?: help"
                 }
             }
         };
@@ -1269,6 +1274,7 @@ fn render_help_overlay(frame: &mut Frame, area: Rect) {
    s / S            Increase / decrease θs (ROMS transforms)
    h / H            Increase / decrease hc (ROMS transforms)
    a / A            Increase / decrease a_vqs0 (Quadratic)
+   `                Open increment settings panel
 
  PANEL RESIZE
    { / }            Shrink / expand left panel
@@ -1529,4 +1535,91 @@ fn render_transform_help_overlay(frame: &mut Frame, area: Rect, app: &App) {
         1,
     );
     frame.render_widget(hint, hint_area);
+}
+
+/// Render the increment settings panel overlay
+fn render_increment_panel(frame: &mut Frame, area: Rect, app: &App) {
+    // Center the panel
+    let popup_width = 42u16;
+    let popup_height = 18u16;
+    let popup_x = area.x + (area.width.saturating_sub(popup_width)) / 2;
+    let popup_y = area.y + (area.height.saturating_sub(popup_height)) / 2;
+    let popup_area = Rect::new(popup_x, popup_y, popup_width, popup_height);
+
+    // Clear the area behind the popup
+    frame.render_widget(Clear, popup_area);
+
+    // Build the content lines
+    let labels = [
+        "Surface Δz",
+        "Min bottom Δz",
+        "θf",
+        "θb",
+        "θs",
+        "hc",
+        "a_vqs0",
+        "Target levels",
+        "Num anchors",
+        "Shallow levels",
+    ];
+
+    let values: [String; 10] = [
+        format!("{:.2}", app.increments.dz_surf),
+        format!("{:.2}", app.increments.dz_bottom_min),
+        format!("{:.2}", app.increments.theta_f),
+        format!("{:.2}", app.increments.theta_b),
+        format!("{:.2}", app.increments.theta_s),
+        format!("{:.2}", app.increments.hc),
+        format!("{:.2}", app.increments.a_vqs0),
+        format!("{}", app.increments.target_levels),
+        format!("{}", app.increments.num_anchors),
+        format!("{}", app.increments.shallow_levels),
+    ];
+
+    let mut lines: Vec<Line> = Vec::with_capacity(12);
+    lines.push(Line::from(""));
+
+    for (i, (label, value)) in labels.iter().zip(values.iter()).enumerate() {
+        let is_selected = i == app.increment_panel_cursor;
+        let is_editing = is_selected && app.increment_editing;
+
+        let display_value = if is_editing {
+            format!("{}_", app.increment_input)
+        } else {
+            value.clone()
+        };
+
+        let cursor_indicator = if is_selected { " ←" } else { "" };
+
+        let line_text = format!("  {:<16} [ {:>6} ]{}", label, display_value, cursor_indicator);
+
+        let style = if is_selected {
+            Style::default().fg(Color::Yellow).bold()
+        } else {
+            Style::default().fg(Color::White)
+        };
+
+        lines.push(Line::styled(line_text, style));
+    }
+
+    lines.push(Line::from(""));
+
+    // Add hint line
+    let hint_text = if app.increment_editing {
+        "  Type value, Enter to set, Esc to cancel"
+    } else {
+        "  ↑↓ select  Enter edit  ` or Esc close"
+    };
+    lines.push(Line::styled(hint_text, Style::default().fg(Color::DarkGray)));
+
+    let content = Paragraph::new(lines).block(
+        Block::default()
+            .title(" Increment Settings ")
+            .title_style(Style::default().fg(Color::Magenta).bold())
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Magenta))
+            .style(Style::default().bg(Color::Black)),
+    );
+
+    frame.render_widget(content, popup_area);
 }
